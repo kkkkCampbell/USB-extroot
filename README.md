@@ -51,7 +51,7 @@
 ## Восстановление после сбоя
 
 Бэкап overlay — /tmp/.usb-extroot-x7k2m9q4p1w8/ (в ОЗУ, до ребута).
-Бэкап доступен по локальной сети \\ip_routera\overlaybackup  
+Бэкап доступен по локальной сети \\\\ip_routera\overlaybackup  
 
 ## Версия
 
