@@ -1,6 +1,6 @@
 #!/bin/sh
 # ============================================================
-#  usb-extroot.sh  v0.1.11
+#  usb-extroot.sh  v0.1.12
 #  Перенос overlay OpenWrt на USB-накопитель (extroot)
 #  Лог: /tmp/usb-extroot.log (сброс в overlay в конце)
 #  Бэкап: /tmp/.usb-extroot-x7k2m9q4p1w8/ (tmpfs, RAM)
@@ -14,11 +14,19 @@
 #  чтение скрипта начинает возвращать чужой или устаревший
 #  контент. Копируем себя в /tmp (tmpfs) и перезапускаемся
 #  оттуда — с этого момента overlay нам больше не важен.
+#
+#  Проверка [ -f "$0" ] — только регулярный файл.
+#  При запуске через sh <(wget ...) $0 это /dev/fd/NN,
+#  симлинк на пайп. cp такого «файла» отдаёт не весь
+#  скрипт, а только непрочитанный остаток пайпа — то
+#  есть кусок с середины. Поэтому в этом режиме
+#  самопереезд не делаем: sh и так читает из того же
+#  пайпа, что и раньше.
 # ------------------------------------------------------------
 case "$0" in
     /tmp/*|/dev/shm/*|/run/*) ;;
     *)
-        if [ -r "$0" ] && [ -w /tmp ]; then
+        if [ -f "$0" ] && [ -w /tmp ]; then
             SELF_RAM=/tmp/.usb-extroot-run.sh
             if cp "$0" "$SELF_RAM" 2>/dev/null; then
                 chmod +x "$SELF_RAM" 2>/dev/null
@@ -28,7 +36,7 @@ case "$0" in
         ;;
 esac
 
-ver="v0.1.11"
+ver="v0.1.12"
 
 CLR_RESET="\033[0m"
 CLR_GREEN="\033[32m"
@@ -361,7 +369,8 @@ shout_fatal() {
 
     if [ "$share_present" = "1" ]; then
         echo -e "  Доступ к бэкапу по локальной сети: "
-        echo -e "  ${CLR_YELLOW}\\\\\\\$(get_router_ip)\\overlaybackup${CLR_RESET} (user: 12345 password: 12345)"
+        echo -e "  ${CLR_YELLOW}\\\\\\\\$(get_router_ip)\\overlaybackup${CLR_RESET}"
+        echo -e "  user: 12345   password: 12345"
         echo
     fi
 
@@ -754,7 +763,7 @@ BANNER
 
     if [ "$EXTROOT_ACTIVE" = "1" ]; then
         echo
-        echo -e "${CLR_ORANGE}overlay уже размещён на внешнем носителе: $EXTROOT_DEV${CLR_RESET}"
+        echo -e "${CLR_ORANGE}  /overlay уже размещён на внешнем носителе: $EXTROOT_DEV${CLR_RESET}"
         echo "  Пункты 1 и 2 недоступны."
     fi
 
@@ -783,8 +792,8 @@ BANNER
     if [ "$EXTROOT_ACTIVE" = "1" ] && [ "$MODE" != "restore" ]; then
         echo
         echo -e "${CLR_ORANGE}Невозможно: overlay уже на $EXTROOT_DEV.${CLR_RESET}"
-        echo "  Перенос на другой носитель пока не поддерживается."
-        echo "  Доступен пункт 3 (восстановление) или 0 (выход)."
+        echo "  Перенос c USB на тот же USB не имеет практического смысла."
+        echo "  Вам доступны только пункты 3 (восстановление) или 0 (выход)."
         echo
         printf "  Нажмите Enter для продолжения (авто через 10с): "
         read -t 10 _
@@ -917,18 +926,18 @@ sed -i '/^\/root\/reboot_after\.sh$/d' /etc/rc.local 2>/dev/null || true
 mkdir -p /overlay
 sleep 1
 sync
-sleep 1
 
-if ! mount | grep -q ' /rom/overlay '; then
+sleep "$WAIT_BEFORE_REBOOT"
+
+if ! mount | grep -q ' /rom/overlay ' && mount | grep -q ' /overlay '; then
+	rm -f /flagfile
+	/etc/init.d/ac_recovery.sh stop
     exit 0
 fi
 
-sleep "\$WAIT_BEFORE_REBOOT"
-reboot
-sleep 60
+sync
+sleep 1
 reboot -f
-sleep 5
-echo b > /proc/sysrq-trigger
 
 EOF
     chmod +x "$UBI_MNT/upper/root/reboot_after.sh"
@@ -1361,7 +1370,8 @@ BACKUP_ARCHIVE="$BACKUP_DIR/overlay_backup_${TS}.tar.gz"
 echo "      поднимаю шару для доступа к бэкапу..."
 share_up
 echo -e "      Доступ к бэкапу по локальной сети: "
-echo -e "      ${CLR_YELLOW}\\\\\\\$(get_router_ip)\\overlaybackup${CLR_RESET} (user: 12345 password: 12345)"
+echo -e "      ${CLR_YELLOW}\\\\\\\\$(get_router_ip)\\overlaybackup${CLR_RESET}"
+echo -e "      user: 12345   password: 12345"
 echo
 
 echo "      удаляю whiteouts из staging..."
@@ -1442,7 +1452,7 @@ cp /tmp/usb-extroot.log "$MNT/upper/root/usb-extroot.log" 2>/dev/null || true
 cat > "$REBOOT_HELPER" <<'EOF'
 #!/bin/sh
 # MAIN
-WAIT_BEFORE_REBOOT=120
+WAIT_BEFORE_REBOOT=60
 
 rm -f /root/reboot_after.sh
 uci -q delete ksmbd.overlaybackup
@@ -1457,18 +1467,18 @@ sed -i '/^\/root\/reboot_after\.sh$/d' /etc/rc.local 2>/dev/null || true
 mkdir -p /overlay
 sleep 1
 sync
-sleep 1
 
-if ! mount | grep -q ' /rom/overlay '; then
+sleep "$WAIT_BEFORE_REBOOT"
+
+if ! mount | grep -q ' /rom/overlay ' && mount | grep -q ' /overlay '; then
+	rm -f /flagfile
+	/etc/init.d/ac_recovery.sh stop
     exit 0
 fi
 
-sleep "$WAIT_BEFORE_REBOOT"
-reboot
-sleep 60
+sync
+sleep 1
 reboot -f
-sleep 5
-echo b > /proc/sysrq-trigger
 
 EOF
 chmod +x "$REBOOT_HELPER"
@@ -1488,7 +1498,9 @@ rm -rf "$STAGE_DIR" 2>/dev/null || true
 echo
 echo -e "${CLR_GREEN}================================================================${CLR_RESET}"
 echo -e "${CLR_GREEN} Готово. Бэкап: $BACKUP_ARCHIVE${CLR_RESET}"
-echo -e "${CLR_YELLOW} Доступ к бэкапу по локальной сети: \\\\\\\\$(get_router_ip)\\overlaybackup (12345/12345)${CLR_RESET}"
+echo -e "${CLR_YELLOW}     Доступ к бэкапу по локальной сети: \\\\\\\\$(get_router_ip)\\overlaybackup${CLR_RESET}"
+echo -e "${CLR_YELLOW}     user: 12345   password: 12345${CLR_RESET}"
+echo
 echo "    1) перезагрузить сейчас"
 echo "    2) выйти без перезагрузки"
 echo -e "${CLR_GREEN}================================================================${CLR_RESET}"
