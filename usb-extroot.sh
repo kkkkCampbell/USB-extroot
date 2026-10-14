@@ -1,19 +1,33 @@
 #!/bin/sh
-# ============================================================
-#  usb-extroot.sh  v1.0.0
+# =====================================================================
+#  usb-extroot.sh  v0.1.10
 #  Перенос overlay OpenWrt на USB-накопитель (extroot)
-#  Лог: /root/usb-extroot.log
+#  Лог: /tmp/usb-extroot.log (сброс в /root/usb-extroot.log в конце)
 #  Бэкап: /tmp/.usb-extroot-x7k2m9q4p1w8/ (tmpfs, RAM)
-# ============================================================
+# =====================================================================
 
-ver="v1.0.0"
+
+case "$0" in
+    /tmp/*|/dev/shm/*|/run/*) ;;
+    *)
+        if [ -r "$0" ] && [ -w /tmp ]; then
+            SELF_RAM=/tmp/.usb-extroot-run.sh
+            if cp "$0" "$SELF_RAM" 2>/dev/null; then
+                chmod +x "$SELF_RAM" 2>/dev/null
+                exec /bin/sh "$SELF_RAM" "$@"
+            fi
+        fi
+        ;;
+esac
+
+ver="v0.1.10"
 
 CLR_RESET="\033[0m"
 CLR_GREEN="\033[32m"
 CLR_ORANGE="\033[38;5;208m"
 CLR_YELLOW="\033[33m"
 
-LOG=/root/usb-extroot.log
+LOG=/tmp/usb-extroot.log
 if [ -z "$_LOGGED" ]; then
     export _LOGGED=1
     FIFO=/tmp/usb-extroot.fifo
@@ -34,6 +48,90 @@ PKG_REPAIR_DNS_CHANGED=0
 PKG_REPAIR_SVC_STOPPED=0
 
 have() { command -v "$1" >/dev/null 2>&1; }
+
+# ============================================================
+#  Поиск устройства внутреннего overlay.
+#  Единственный критерий — имя UBI-тома "rootfs_data".
+#
+#  Возвращает:
+#    0 — ровно один том, устройство в stdout
+#    1 — ни одного тома
+#    2 — больше одного тома, список устройств в stdout
+# ============================================================
+find_internal_overlay_dev() {
+    local nf d found count
+
+    found=""
+    count=0
+    for nf in /sys/class/ubi/ubi*_*/name; do
+        [ -f "$nf" ] || continue
+        [ "$(cat "$nf" 2>/dev/null)" = "rootfs_data" ] || continue
+        d=$(basename "$(dirname "$nf")")
+        [ -c "/dev/$d" ] || continue
+        found="$found /dev/$d"
+        count=$((count + 1))
+    done
+
+    case "$count" in
+        0) return 1 ;;
+        1) echo "$found" | sed 's/^ //'; return 0 ;;
+        *) echo "$found" | sed 's/^ //'; return 2 ;;
+    esac
+}
+
+# ============================================================
+#  Шара для доступа к бэкапу по локалке
+# ============================================================
+share_up() {
+    grep -q "^12345:" /etc/passwd || \
+        echo "12345:x:1000:1000:12345:/var:/bin/false" >> /etc/passwd
+    if have ksmbd.useradmin; then
+        printf "12345\n12345\n" | ksmbd.useradmin -a 12345 >/dev/null 2>&1
+    fi
+
+    if [ -x /etc/init.d/ksmbd ]; then
+        uci -q set ksmbd.global=ksmbd
+        uci -q set ksmbd.global.interface='br-lan'
+        uci -q set ksmbd.global.workgroup='WORKGROUP'
+        uci -q set ksmbd.global.allow_guest_ipc='1'
+
+        uci -q delete ksmbd.overlaybackup
+        uci -q set ksmbd.overlaybackup=share
+        uci -q set ksmbd.overlaybackup.name='overlaybackup'
+        uci -q set ksmbd.overlaybackup.path="${BACKUP_DIR:-/tmp/.usb-extroot-x7k2m9q4p1w8}"
+        uci -q set ksmbd.overlaybackup.comment='Extroot Emergency Backup'
+        uci -q set ksmbd.overlaybackup.browseable='yes'
+        uci -q set ksmbd.overlaybackup.read_only='no'
+        uci -q set ksmbd.overlaybackup.guest_ok='yes'
+        uci -q set ksmbd.overlaybackup.users='12345'
+        uci -q commit ksmbd
+
+        /etc/init.d/ksmbd restart >/dev/null 2>&1
+    fi
+}
+
+share_down() {
+    if uci -q get ksmbd.overlaybackup >/dev/null 2>&1; then
+        uci -q delete ksmbd.overlaybackup
+        uci -q commit ksmbd
+    fi
+
+    if have ksmbd.useradmin; then
+        ksmbd.useradmin -d 12345 >/dev/null 2>&1
+    fi
+
+    sed -i '/^12345:/d' /etc/passwd 2>/dev/null
+    if [ -f /etc/shadow ]; then
+        sed -i '/^12345:/d' /etc/shadow 2>/dev/null
+    fi
+}
+
+# ============================================================
+#  Перехват INT/TERM/HUP: восстановить сеть и убрать шару,
+#  если скрипт оборван посередине (Ctrl+C, kill, SIGHUP).
+#  EXIT не трогаем — иначе конфликт с обычными exit 0/1.
+# ============================================================
+trap 'echo; echo "Прервано. Восстанавливаю состояние..."; pkg_repair_finish; share_down; exit 130' INT TERM HUP
 
 pkg_repair_finish() {
     [ "$PKG_REPAIR_ACTIVE" = "1" ] || return 0
@@ -62,38 +160,6 @@ pkg_repair_finish() {
     PKG_REPAIR_ACTIVE=0
 }
 
-# ============================================================
-#  Шара для доступа к бэкапу по локальной сети
-# ============================================================
-share_up() {
-    local rip=$(get_router_ip)
-
-    grep -q "^12345:" /etc/passwd || echo "12345:x:1000:1000:12345:/var:/bin/false" >> /etc/passwd
-    if have ksmbd.useradmin; then
-        printf "12345\n12345\n" | ksmbd.useradmin -a 12345 >/dev/null 2>&1
-    fi
-
-    if [ -x /etc/init.d/ksmbd ]; then
-        uci -q set ksmbd.global=ksmbd
-        uci -q set ksmbd.global.interface='br-lan'
-        uci -q set ksmbd.global.workgroup='WORKGROUP'
-        uci -q set ksmbd.global.allow_guest_ipc='1'
-
-        uci -q delete ksmbd.overlaybackup
-        uci -q set ksmbd.overlaybackup=share
-        uci -q set ksmbd.overlaybackup.name='overlaybackup'
-        uci -q set ksmbd.overlaybackup.path="${BACKUP_DIR:-/tmp/.usb-extroot-x7k2m9q4p1w8}"
-        uci -q set ksmbd.overlaybackup.comment='Extroot Emergency Backup'
-        uci -q set ksmbd.overlaybackup.browseable='yes'
-        uci -q set ksmbd.overlaybackup.read_only='no'
-        uci -q set ksmbd.overlaybackup.guest_ok='yes'
-        uci -q set ksmbd.overlaybackup.users='12345'
-        uci -q commit ksmbd
-
-        /etc/init.d/ksmbd restart >/dev/null 2>&1
-    fi
-}
-
 die() {
     pkg_repair_finish
     echo
@@ -110,7 +176,6 @@ die() {
 
 fatal() {
     pkg_repair_finish
-    share_up
     FATAL_STAGE="$1"
     echo
     echo -e "${CLR_ORANGE}############################################################${CLR_RESET}"
@@ -119,6 +184,7 @@ fatal() {
     echo
     echo "$2"
     echo
+	cp /tmp/usb-extroot.log "${BACKUP_DIR:-/tmp/.usb-extroot-x7k2m9q4p1w8}/" 2>/dev/null || true
     shout_fatal
     exit 1
 }
@@ -183,14 +249,22 @@ pkg_present() {
     esac
 }
 
+# ============================================================
+#  Родительское устройство для sd*/mmcblk*
+# ============================================================
 parent_dev() {
-    echo "$1" | sed 's|\(/dev/[a-z]*\)[0-9_]*$|\1|'
+    local d="$1"
+    case "$d" in
+        /dev/mmcblk*p[0-9]*) echo "${d%p[0-9]*}" ;;
+        /dev/sd[a-z][0-9]*)  echo "${d%[0-9]*}" ;;
+        *)                   echo "$d" ;;
+    esac
 }
 
 is_usb() {
     local b=$(basename "$1")
     case "$b" in
-        sd[a-z][0-9]*|mmcblk[0-9]*p[0-9]*|nvme[0-9]*n[0-9]*p[0-9]*)
+        sd[a-z][0-9]*|mmcblk[0-9]*p[0-9]*)
             b=$(basename "$(parent_dev "/dev/$b")")
             ;;
     esac
@@ -201,9 +275,44 @@ is_usb() {
     return 1
 }
 
+# ============================================================
+#  Внутреннее (впаянное) устройство:
+#    ubi*, mtdblock*, root       — NAND/NOR
+#    mmcblk* с removable=0       — eMMC
+# ============================================================
 is_internal_dev() {
+    local parent
     case "$1" in
         /dev/ubi*|/dev/mtdblock*|/dev/root) return 0;;
+    esac
+
+    parent=$(basename "$(parent_dev "$1")")
+    case "$parent" in
+        mmcblk[0-9]*)
+            [ "$(cat /sys/block/$parent/removable 2>/dev/null)" = "0" ] && return 0
+            ;;
+    esac
+    return 1
+}
+
+# ============================================================
+#  Съёмное внешнее хранилище?
+#    sd*     -> is_usb
+#    mmcblk* -> removable=1 (SD-карта), removable=0 (eMMC) отсеивается
+# ============================================================
+is_removable_storage() {
+    local parent
+    parent=$(basename "$(parent_dev "$1")")
+
+    case "$parent" in
+        sd[a-z])
+            is_usb "/dev/$parent"
+            return $?
+            ;;
+        mmcblk[0-9]*)
+            [ "$(cat /sys/block/$parent/removable 2>/dev/null)" = "1" ]
+            return $?
+            ;;
     esac
     return 1
 }
@@ -226,23 +335,28 @@ get_router_ip() {
     if [ -n "$ip" ]; then echo "$ip"; return; fi
     ip=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')
     if [ -n "$ip" ]; then echo "$ip"; return; fi
-    echo "<ip-роутера: ${ip}>"
+    echo "<ip-роутера>"
 }
 
 shout_fatal() {
     local rip=$(get_router_ip)
+    local share_present=0
+    uci -q get ksmbd.overlaybackup >/dev/null 2>&1 && share_present=1
+
     echo -e "${CLR_ORANGE}------------------------------------------------------------${CLR_RESET}"
     echo -e "${CLR_ORANGE} Этап: ${FATAL_STAGE:-<неизвестен>}${CLR_RESET}"
     echo
-    echo -e "${CLR_YELLOW} Бэкап overlay:${CLR_RESET}"
+    echo -e "${CLR_YELLOW} Бэкап overlay (если создан):${CLR_RESET}"
     echo "    ${BACKUP_DIR:-/tmp/.usb-extroot-x7k2m9q4p1w8}/"
     echo "    (в ОЗУ — исчезнет при ребуте, скопируй сейчас, если нужен)"
     echo
-    echo -e "${CLR_YELLOW} Бэкап доступен по локальной сети:${CLR_RESET}"
-    echo "    \\\\$rip\\overlaybackup"
-    echo "    пользователь: 12345"
-    echo "    пароль:       12345"
-    echo
+
+    if [ "$share_present" = "1" ]; then
+        echo -e "  Доступ к бэкапу по локальной сети: "
+        echo -e "  ${CLR_YELLOW}\\\\\\$(get_router_ip)\\overlaybackup${CLR_RESET} (user: 12345 password: 12345)"
+        echo
+    fi
+
     echo -e "${CLR_YELLOW} НЕ ПЕРЕЗАГРУЖАЙ РОУТЕР, пока не убедишься, что:${CLR_RESET}"
     echo "    - /overlay смонтирован и доступен"
     echo "    - fstab.extroot не указывает на USB"
@@ -363,10 +477,13 @@ get_current_overlay() {
     echo "$mp"
 }
 
-usb_quick_check() {
-    for d in /dev/sd? /dev/mmcblk? /dev/nvme?n?; do
+# ============================================================
+#  Быстрая проверка: есть ли вообще внешнее съёмное хранилище
+# ============================================================
+storage_quick_check() {
+    for d in /dev/sd? /dev/mmcblk?; do
         [ -b "$d" ] || continue
-        is_usb "$d" || continue
+        is_removable_storage "$d" || continue
         return 0
     done
     return 1
@@ -468,10 +585,8 @@ stage1_overlay() {
     STAGE1="[1/9] текущий overlay"
     echo "$STAGE1 ..."
 
-    CUR_OVERLAY_MP=$(get_current_overlay)
     echo "      overlay: $CUR_OVERLAY_MP"
 
-    CUR_OVERLAY_DEV=$(awk -v m="$CUR_OVERLAY_MP" '$2==m {print $1; exit}' /proc/mounts)
     if [ -z "$CUR_OVERLAY_DEV" ]; then
         die "$STAGE1" "Не нашёл устройство $CUR_OVERLAY_MP.
 
@@ -481,37 +596,32 @@ stage1_overlay() {
     fi
     echo "      устройство: $CUR_OVERLAY_DEV"
 
-    if is_usb "$CUR_OVERLAY_DEV"; then
-        REINSTALL=1
-        echo -e "${CLR_ORANGE}      /overlay УЖЕ на USB: $CUR_OVERLAY_DEV${CLR_RESET}"
-        echo -e "${CLR_ORANGE}      Это повторный перенос. Будет произведена двойная перезагрузка.${CLR_RESET}"
+    ORIG_DEV="$CUR_OVERLAY_DEV"
 
-        ORIG_DEV="$CUR_OVERLAY_DEV"
-    else
-        REINSTALL=0
-        if ! is_internal_dev "$CUR_OVERLAY_DEV"; then
-            die "$STAGE1" "/overlay не на внутреннем устройстве: $CUR_OVERLAY_DEV
-Скрипт работает только с внутренним overlay (ubi/mtdblock/root)."
-        fi
-        ORIG_DEV="$CUR_OVERLAY_DEV"
+    if is_internal_dev "$CUR_OVERLAY_DEV"; then
         echo "      ок, внутренний: $ORIG_DEV"
+    else
+        echo -e "${CLR_ORANGE}      /overlay УЖЕ на внешнем носителе: $CUR_OVERLAY_DEV${CLR_RESET}"
+        echo -e "${CLR_ORANGE}      Это повторный перенос на другой накопитель.${CLR_RESET}"
     fi
 }
 
 stage2_find_usb() {
     echo
-    STAGE2="[2/9] поиск USB"
+    STAGE2="[2/9] поиск внешнего накопителя"
     echo "$STAGE2 ..."
 
+    local skip_parent=$(parent_dev "$CUR_OVERLAY_DEV")
+
     ALL=""
-    for d in /dev/sd? /dev/mmcblk? /dev/nvme?n?; do
+    for d in /dev/sd? /dev/mmcblk?; do
         [ -b "$d" ] && ALL="$ALL $d"
     done
-    USB=""
+    CAND=""
     for d in $ALL; do
-        is_usb "$d" || continue
-        [ "$d" = "$CUR_OVERLAY_DEV" ] && continue
-        USB="$USB $d"
+        is_removable_storage "$d" || continue
+        [ "$(parent_dev "$d")" = "$skip_parent" ] && continue
+        CAND="$CAND $d"
     done
 
     USB_PRESENT=0
@@ -520,14 +630,14 @@ stage2_find_usb() {
     FS=""
     DESC=""
 
-    if [ -z "$USB" ]; then
+    if [ -z "$CAND" ]; then
         return 1
     fi
 
     DISKS=""
-    for d in $USB; do
+    for d in $CAND; do
         case "$(basename $d)" in
-            sd[a-z]) DISKS="$DISKS $d";;
+            sd[a-z]|mmcblk[0-9]*) DISKS="$DISKS $d";;
         esac
     done
 
@@ -541,7 +651,7 @@ stage2_find_usb() {
     if [ $# -eq 1 ]; then
         TARGET="$1"
     else
-        echo "Найдено несколько USB-накопителей:"
+        echo "Найдено несколько внешних накопителей:"
         for d in $DISKS; do echo "  $(describe $d)"; done
         printf "Укажите целевой (например /dev/sda): "
         read TARGET
@@ -564,7 +674,8 @@ $(for d in $DISKS; do echo "  $d"; done)"
     for p in ${TARGET}*; do
         [ -b "$p" ] || continue
         case "$(basename $p)" in
-            $(basename $TARGET)) continue;;
+            sd[a-z][0-9]*|mmcblk[0-9]*p[0-9]*) ;;
+            *) continue;;
         esac
         PARTS="$PARTS $p"
     done
@@ -573,6 +684,13 @@ $(for d in $DISKS; do echo "  $d"; done)"
 
     block info "$PART" >/dev/null 2>&1
     FS=$(block info "$PART" 2>/dev/null | grep -o 'TYPE="[^"]*"' | cut -d'"' -f2)
+
+    if [ "$MODE" = "noformat" ]; then
+        if [ "$FS" != "ext4" ]; then
+            die "$STAGE2" "Нужна существующая ФС ext4 на $PART.
+Текущая: FS=${FS:--}."
+        fi
+    fi
 
     echo -e "${CLR_YELLOW}      ЦЕЛЬ: $DESC${CLR_RESET}"
     for p in $PARTS; do
@@ -599,7 +717,7 @@ cat <<'BANNER'
 ------------------------------------------------------------
  До ввода YES — только чтение.
  После YES — необратимо; при ошибке — стоп и инструкции.
- Лог: /root/usb-extroot.log
+ Лог: /tmp/usb-extroot.log
 ============================================================
 BANNER
 
@@ -630,7 +748,7 @@ if [ "$MODE" = "restore" ]; then
 
     QDEV=$(quick_overlay_dev)
 
-    if [ -n "$QDEV" ] && ! is_usb "$QDEV"; then
+    if [ -n "$QDEV" ] && is_internal_dev "$QDEV"; then
         if ! uci -q get fstab.extroot >/dev/null 2>&1; then
             die "$CHOICE_TEXT" "extroot не найден в fstab.
 Восстанавливать нечего."
@@ -640,51 +758,140 @@ if [ "$MODE" = "restore" ]; then
     fix_uboot_env
     stage0_deps
 
-    uci -q delete fstab.extroot
-    uci -q delete fstab.rwm
-    uci commit fstab
+    share_down
+
+    UBI_DEV=$(find_internal_overlay_dev)
+    UBI_RC=$?
+
+    case "$UBI_RC" in
+        0)
+            echo "      том rootfs_data: $UBI_DEV"
+            ;;
+        1)
+            die "$CHOICE_TEXT" "Не нашёл ни одного тома rootfs_data в /sys/class/ubi/.
+
+Это не NAND-OpenWrt с overlay на UBI, либо UBI ещё не инициализирован.
+
+Проверь:
+  ls /sys/class/ubi/
+  for f in /sys/class/ubi/*/name; do echo \"\$f = \$(cat \$f)\"; done
+  cat /proc/filesystems | grep ubifs
+
+Ничего не тронуто, extroot не снят."
+            ;;
+        2)
+            die "$CHOICE_TEXT" "Найдено несколько томов rootfs_data:
+$UBI_DEV
+
+Автовыбор невозможен (dual-boot?).
+
+Смонтируй нужный том вручную и заверши restore сам:
+  mount -t ubifs /dev/ubiN_M /mnt/ubi_restore
+  uci -c /mnt/ubi_restore/upper/etc/config -q delete fstab.extroot
+  uci -c /mnt/ubi_restore/upper/etc/config -q delete fstab.rwm
+  uci -c /mnt/ubi_restore/upper/etc/config commit fstab
+  umount /mnt/ubi_restore
+
+Ничего не тронуто, extroot не снят."
+            ;;
+    esac
 
     UBI_MNT=/mnt/ubi_restore
     mkdir -p "$UBI_MNT"
-    if mount -t ubifs /dev/ubi0_2 "$UBI_MNT" 2>/dev/null; then
 
-        if [ -d "$UBI_MNT/upper/etc/config" ]; then
-            uci -c "$UBI_MNT/upper/etc/config" -q delete fstab.extroot
-            uci -c "$UBI_MNT/upper/etc/config" -q delete fstab.rwm
-            uci -c "$UBI_MNT/upper/etc/config" commit fstab
-            echo "      fstab в ubi0_2 очищен."
-        fi
+    mount_ok=0
+    if mount -t ubifs "$UBI_DEV" "$UBI_MNT" 2>/dev/null; then
+        mount_ok=1
+    fi
 
-        mkdir -p "$UBI_MNT/upper/root"
-        cat > "$UBI_MNT/upper/root/reboot_after.sh" <<'EOF'
+    if [ "$mount_ok" != "1" ]; then
+        rmdir "$UBI_MNT" 2>/dev/null || true
+        die "$CHOICE_TEXT" "Не смог смонтировать $UBI_DEV в $UBI_MNT.
+
+Проверь:
+  mount | grep ubifs
+  dmesg | tail -20
+  cat /proc/filesystems | grep ubifs
+
+Ничего не тронуто, extroot не снят."
+    fi
+
+    if [ ! -L "$UBI_MNT/.fs_state" ] \
+       || [ ! -d "$UBI_MNT/upper" ] \
+       || [ ! -d "$UBI_MNT/work" ] \
+       || [ ! -d "$UBI_MNT/upper/etc/config" ]; then
+        umount "$UBI_MNT" 2>/dev/null || true
+        rmdir "$UBI_MNT" 2>/dev/null || true
+        die "$CHOICE_TEXT" "$UBI_DEV не похож на overlay OpenWrt.
+
+Нет одного из маркеров: .fs_state, upper/, work/, upper/etc/config.
+Это может быть чужой ubifs (калибровки, логи, вендорский раздел).
+
+Ничего не тронуто, extroot не снят."
+    fi
+    echo -e "${CLR_GREEN}      маркеры overlay подтверждены${CLR_RESET}"
+
+    if [ -d "$UBI_MNT/upper/etc/config" ]; then
+        uci -c "$UBI_MNT/upper/etc/config" -q delete fstab.extroot
+        uci -c "$UBI_MNT/upper/etc/config" -q delete fstab.rwm
+        uci -c "$UBI_MNT/upper/etc/config" commit fstab
+        echo "      fstab внутри $UBI_DEV очищен."
+    fi
+
+    uci -q delete fstab.extroot
+    uci -q delete fstab.rwm
+    uci commit fstab
+    echo "      fstab в живой системе очищен."
+
+    mkdir -p "$UBI_MNT/upper/root"
+    cat > "$UBI_MNT/upper/root/reboot_after.sh" <<EOF
 #!/bin/sh
+WAIT_BEFORE_REBOOT=300
+
 rm -f /root/reboot_after.sh
-sleep 1
+uci -q delete ksmbd.overlaybackup
+uci -q commit ksmbd
+if command -v ksmbd.useradmin >/dev/null 2>&1; then
+    ksmbd.useradmin -d 12345 >/dev/null 2>&1
+fi
+sed -i '/^12345:/d' /etc/passwd
+[ -f /etc/shadow ] && sed -i '/^12345:/d' /etc/shadow
+sed -i '/^\/root\/reboot_after\.sh$/d' /etc/rc.local 2>/dev/null || true
+
 mkdir -p /overlay
-mount -t ubifs /dev/ubi0_2 /overlay
+mount -t ubifs $UBI_DEV /overlay 2>/dev/null || true
 sleep 1
 sync
+
+if ! mount | grep -q ' /rom/overlay '; then
+    echo "usb-extroot: /rom/overlay не обнаружен, ребут не нужен" > /dev/kmsg 2>/dev/null || true
+    exit 0
+fi
+
+echo "usb-extroot: /rom/overlay найден, ребут через \${WAIT_BEFORE_REBOOT}s" > /dev/kmsg 2>/dev/null || true
+sleep "\$WAIT_BEFORE_REBOOT"
 reboot
 EOF
-        chmod +x "$UBI_MNT/upper/root/reboot_after.sh"
+    chmod +x "$UBI_MNT/upper/root/reboot_after.sh"
 
-        mkdir -p "$UBI_MNT/upper/etc"
-        if [ ! -f "$UBI_MNT/upper/etc/rc.local" ]; then
-            printf '#!/bin/sh\n# Put your custom commands here that should be executed once\n# the system init finished. By default this file does nothing.\n\nexit 0\n' > "$UBI_MNT/upper/etc/rc.local"
-        fi
-        if ! grep -q '^/root/reboot_after.sh$' "$UBI_MNT/upper/etc/rc.local"; then
-            sed -i '/^exit 0/i /root/reboot_after.sh' "$UBI_MNT/upper/etc/rc.local"
-        fi
-        chmod +x "$UBI_MNT/upper/etc/rc.local"
-
-        sync
-        umount "$UBI_MNT" 2>/dev/null || true
-        echo "      reboot_after.sh + rc.local в ubi0_2 подготовлены."
+    mkdir -p "$UBI_MNT/upper/etc"
+    if [ ! -f "$UBI_MNT/upper/etc/rc.local" ]; then
+        printf '#!/bin/sh\n# Put your custom commands here that should be executed once\n# the system init finished. By default this file does nothing.\n\nexit 0\n' > "$UBI_MNT/upper/etc/rc.local"
     fi
+    if ! grep -q '^/root/reboot_after.sh$' "$UBI_MNT/upper/etc/rc.local"; then
+        sed -i '/^exit 0/i /root/reboot_after.sh' "$UBI_MNT/upper/etc/rc.local"
+    fi
+    chmod +x "$UBI_MNT/upper/etc/rc.local"
+
+    sync
+	sleep 1
+	cp /tmp/usb-extroot.log "$UBI_MNT/upper/root/usb-extroot.log" 2>/dev/null || true
+    umount "$UBI_MNT" 2>/dev/null || true
+    echo "      reboot_after.sh + rc.local в $UBI_DEV подготовлены."
     rmdir "$UBI_MNT" 2>/dev/null || true
 
     echo
-    echo -e "${CLR_GREEN} Готово. Ребут для применения.${CLR_RESET}"
+    echo -e "${CLR_GREEN}Готово. Ребут для применения.${CLR_RESET}"
     printf "Перезагрузить сейчас? (y/N): "
     read R
     case "$R" in
@@ -705,9 +912,9 @@ fi
 #  ВЕТКИ 1 и 2 — перенос
 # ============================================================
 
-if ! usb_quick_check; then
-    die "$CHOICE_TEXT" "USB-накопителей не найдено.
-Подключите флешку и запустите скрипт заново."
+if ! storage_quick_check; then
+    die "$CHOICE_TEXT" "Внешних съёмных накопителей не найдено.
+Подключите флешку/SD-карту и запустите скрипт заново."
 fi
 
 CUR_OVERLAY_MP=$(get_current_overlay)
@@ -718,58 +925,44 @@ if [ -z "$CUR_OVERLAY_DEV" ]; then
 Проверь: mount | grep overlay"
 fi
 
+SKIP_PARENT=$(parent_dev "$CUR_OVERLAY_DEV")
+
+# ============================================================
+#  Ранняя проверка: есть ли вообще куда переносить.
+#  Накопитель, на котором уже overlay, отсеивается по родителю.
+#  Если после отсева кандидатов нет — дальше идти некуда.
+#  Это read-only проверка, до любых изменений системы.
+# ============================================================
 USB_TARGET=""
-for d in /dev/sd? /dev/mmcblk? /dev/nvme?n?; do
+for d in /dev/sd? /dev/mmcblk?; do
     [ -b "$d" ] || continue
-    is_usb "$d" || continue
-    [ "$d" = "$CUR_OVERLAY_DEV" ] && continue
+    is_removable_storage "$d" || continue
+    [ "$(parent_dev "$d")" = "$SKIP_PARENT" ] && continue
     USB_TARGET="$d"
     break
 done
 
-USB_PART=""
-for p in ${USB_TARGET}*; do
-    [ -b "$p" ] || continue
-    case "$(basename $p)" in
-        $(basename $USB_TARGET)) continue;;
-    esac
-    USB_PART="$p"
-    break
-done
-[ -z "$USB_PART" ] && USB_PART="$USB_TARGET"
+if [ -z "$USB_TARGET" ]; then
+    die "$CHOICE_TEXT" "Внешних накопителей для переноса не найдено.
 
-SRC_PARENT=$(parent_dev "$CUR_OVERLAY_DEV")
-DST_PARENT=$(parent_dev "$USB_PART")
+Текущий overlay уже на $CUR_OVERLAY_DEV ($SKIP_PARENT).
+Этот накопитель пропускается: перенос на него бессмыслен.
 
-SAME_DISK=0
-if [ "$SRC_PARENT" = "$DST_PARENT" ]; then
-    if [ "$REINSTALL" != "1" ]; then
-        die "$CHOICE_TEXT" "overlay и $USB_PART на одном диске ($SRC_PARENT).
-Переформат/очистка на том же диске не поддерживаются.
-Подключи другую флешку."
-    fi
-    SAME_DISK=1
+Подключи другой накопитель, либо вернись на внутренний overlay (режим 3)."
 fi
 
-if [ "$USB_PART" = "$CUR_OVERLAY_DEV" ] && [ "$SAME_DISK" != "1" ]; then
-    die "$CHOICE_TEXT" "$USB_PART совпадает с текущим /overlay."
-fi
-
-if [ "$MODE" = "noformat" ]; then
-    USB_FS=$(block info "$USB_PART" 2>/dev/null | grep -o 'TYPE="[^"]*"' | cut -d'"' -f2)
-    if [ "$USB_FS" != "ext4" ]; then
-        die "$CHOICE_TEXT" "Нужна существующая ФС ext4 на $USB_PART.
-Текущая: FS=${USB_FS:--}."
-    fi
-fi
-
+# ============================================================
+#  Только теперь — изменяющие операции.
+#  Проверка ФС для режима noformat — в stage2_find_usb,
+#  после финального выбора $PART.
+# ============================================================
 fix_uboot_env
 stage0_deps
 stage1_overlay
 
 if ! stage2_find_usb; then
-    die "$CHOICE_TEXT" "USB-накопитель найден, но не определён как sd*.
-Проверьте: ls /dev/sd*  и  dmesg | tail -20"
+    die "$CHOICE_TEXT" "Внешний накопитель найден, но не определён как диск (sd*/mmcblk*).
+Проверь: ls /dev/sd* /dev/mmcblk* и dmesg | tail -20"
 fi
 
 # ============================================================
@@ -803,7 +996,7 @@ Overlay неполный или нестандартный."
 fi
 echo -e "${CLR_GREEN}      структура overlay корректна${CLR_RESET}"
 
-echo "      физ.диски: overlay=$SRC_PARENT usb=$DST_PARENT"
+echo "      физ.диски: overlay=$SKIP_PARENT usb=$(parent_dev "$PART")"
 
 echo
 if [ "$MODE" = format ]; then
@@ -813,39 +1006,11 @@ else
     echo -e "${CLR_YELLOW}остальные данные не тронуты. Затем будет развёрнут overlay.${CLR_RESET}"
 fi
 
-if [ "$SAME_DISK" = "1" ]; then
-	rip=$(get_router_ip)
-    echo
-    echo -e "${CLR_ORANGE}  !!! ТА ЖЕ ФЛЕШКА !!!${CLR_RESET}"
-    echo "  overlay сейчас на $CUR_OVERLAY_DEV ($SRC_PARENT)."
-    if [ "$MODE" = format ]; then
-        echo "  Будет: umount -l + mkfs.ext4 -F $PART."
-        CONFIRM_WORD=FORMAT
-    else
-        echo "  Будет: umount -l + удаление overlay-структуры."
-        CONFIRM_WORD=CLEAN
-    fi
-    echo -e "${CLR_ORANGE}  До ребута система будет НЕРАБОТОСПОСОБНА.${CLR_RESET}"
-    echo      
-    echo -e "${CLR_YELLOW} Бэкап доступен по локальной сети:${CLR_RESET}"
-    echo "    \\\\$rip\\overlaybackup"
-    echo "    пользователь: 12345"
-    echo "    пароль:       12345"
-    echo "СКОПИРУЙТЕ ДО ПЕРЕЗАГРУЗКИ РОУТЕРА!!!"
-    echo
-    printf "Для подтверждения введите %s: " "$CONFIRM_WORD"
-    read A
-    if [ "$A" != "$CONFIRM_WORD" ]; then
-        echo "Отменено."
-        exit 0
-    fi
-else
-    printf "Для подтверждения введите YES: "
-    read A
-    if [ "$A" != "YES" ]; then
-        echo "Отменено."
-        exit 0
-    fi
+printf "Для подтверждения введите YES: "
+read A
+if [ "$A" != "YES" ]; then
+    echo "Отменено."
+    exit 0
 fi
 echo -e "Подтверждено: ${CLR_YELLOW}$TARGET ($MODE)${CLR_RESET}."
 
@@ -900,6 +1065,10 @@ echo -e "${CLR_GREEN}      staging корректный${CLR_RESET}"
 
 # ============================================================
 #  ШАГ 7. Формат / очистка + копирование staging на USB
+#
+#  Overlay-источник не трогаем: upper/ уже в /tmp,
+#  система работает с текущего overlay. fuser/umount
+#  касаются только целевых точек ($MNT, $PART, $TARGET).
 # ============================================================
 echo
 STAGE7="[7/9] подготовка $PART"
@@ -914,10 +1083,10 @@ if [ -x /etc/init.d/fstab ]; then
 fi
 
 if have fuser; then
-    fuser -k -m "$CUR_OVERLAY_MP" "$MNT" "$PART" 2>/dev/null || true
+    fuser -k -m "$MNT" "$PART" 2>/dev/null || true
 fi
 
-for target_mpt in "$CUR_OVERLAY_MP" "$MNT" "$PART" "$TARGET"; do
+for target_mpt in "$MNT" "$PART" "$TARGET"; do
     umount "$target_mpt" 2>/dev/null || true
     umount -l "$target_mpt" 2>/dev/null || true
     umount -f "$target_mpt" 2>/dev/null || true
@@ -925,15 +1094,7 @@ done
 
 sleep 2
 
-if [ "$SAME_DISK" = "1" ]; then
-    echo "      umount -l $CUR_OVERLAY_MP (тот же диск)"
-    umount -l "$CUR_OVERLAY_MP" 2>/dev/null || true
-    umount -l "$CUR_OVERLAY_DEV" 2>/dev/null || true
-    sleep 1
-fi
-
 if [ "$MODE" = format ]; then
-    echo
     echo "      освобождаю $PART..."
 
     if have block; then
@@ -959,15 +1120,10 @@ Staging цел: $STAGE_DIR"
 fi
 
 if [ "$MODE" = format ]; then
-    echo
     echo "      форматирование $PART в ext4..."
 
-    uci -q delete fstab.extroot
-    uci -q delete fstab.rwm
-    uci commit fstab
     sync
     sleep 1
-    echo "      fstab очищен перед mkfs"
 
     b=$(basename "$TARGET")
     VENDOR=$(cat /sys/block/$b/device/vendor 2>/dev/null | tr -d '\n ' | sed 's/^ *//;s/ *$//')
@@ -1020,7 +1176,8 @@ Staging цел: $STAGE_DIR"
         for p in ${TARGET}*; do
             [ -b "$p" ] || continue
             case "$(basename $p)" in
-                $(basename $TARGET)) continue ;;
+                sd[a-z][0-9]*|mmcblk[0-9]*p[0-9]*) ;;
+                *) continue ;;
             esac
             PART="$p"
             break
@@ -1068,7 +1225,6 @@ Staging цел: $STAGE_DIR"
     echo -e "${CLR_GREEN}      отформатировано: $PART (ext4, label=extroot)${CLR_RESET}"
 fi
 
-echo
 echo "      монтирую $PART -> $MNT"
 mount "$PART" "$MNT"
 if [ $? -ne 0 ]; then
@@ -1143,6 +1299,12 @@ mkdir -p "$BACKUP_DIR"
 TS=$(date +%Y-%m-%d_%H-%M-%S)
 BACKUP_ARCHIVE="$BACKUP_DIR/overlay_backup_${TS}.tar.gz"
 
+echo "      поднимаю шару для доступа к бэкапу..."
+share_up
+echo -e "      Доступ к бэкапу по локальной сети: "
+echo -e "      ${CLR_YELLOW}\\\\\\$(get_router_ip)\\overlaybackup${CLR_RESET} (user: 12345 password: 12345)"
+echo
+
 echo "      удаляю whiteouts из staging..."
 find "$STAGE_DIR/overlay/upper" -name '.wh.*' -delete 2>/dev/null || true
 find "$STAGE_DIR/overlay/upper" -type d -empty -delete 2>/dev/null || true
@@ -1165,9 +1327,6 @@ ARCHIVE_SIZE_KB=$(du -k "$BACKUP_ARCHIVE" 2>/dev/null | awk '{print $1}')
 echo "      архив: ${ARCHIVE_SIZE_KB}K"
 echo -e "${CLR_GREEN}      архив создан${CLR_RESET}"
 
-share_up
-echo "      шара overlaybackup поднята"
-
 # ============================================================
 #  ШАГ 9. fstab
 # ============================================================
@@ -1177,6 +1336,10 @@ echo "$STAGE9 ..."
 
 UUID=$(block info "$PART" | grep -o 'UUID="[^"]*"' | cut -d'"' -f2)
 if [ -z "$UUID" ]; then
+    sleep 1
+    mkdir -p "$MNT/upper/root"
+    sleep 1; sync
+    cp /tmp/usb-extroot.log "$MNT/upper/root/usb-extroot.log" 2>/dev/null || true
     umount "$MNT" 2>/dev/null || true
     fatal "$STAGE9" "Не получил UUID для $PART.
 Staging цел: $STAGE_DIR
@@ -1214,12 +1377,33 @@ REBOOT_HELPER="$MNT/upper/root/reboot_after.sh"
 
 mkdir -p "$MNT/upper/root"
 
+sleep 1; sync
+cp /tmp/usb-extroot.log "$MNT/upper/root/usb-extroot.log" 2>/dev/null || true
+
 cat > "$REBOOT_HELPER" <<'EOF'
 #!/bin/sh
+WAIT_BEFORE_REBOOT=300
+
 rm -f /root/reboot_after.sh
-sleep 2
+uci -q delete ksmbd.overlaybackup
+uci -q commit ksmbd
+if command -v ksmbd.useradmin >/dev/null 2>&1; then
+    ksmbd.useradmin -d 12345 >/dev/null 2>&1
+fi
+sed -i '/^12345:/d' /etc/passwd
+[ -f /etc/shadow ] && sed -i '/^12345:/d' /etc/shadow
+sed -i '/^\/root\/reboot_after\.sh$/d' /etc/rc.local 2>/dev/null || true
+
 mkdir -p /overlay
 sync
+
+if ! mount | grep -q ' /rom/overlay '; then
+    echo "usb-extroot: /rom/overlay не обнаружен, ребут не нужен" > /dev/kmsg 2>/dev/null || true
+    exit 0
+fi
+
+echo "usb-extroot: /rom/overlay найден, ребут через ${WAIT_BEFORE_REBOOT}s" > /dev/kmsg 2>/dev/null || true
+sleep "$WAIT_BEFORE_REBOOT"
 reboot
 EOF
 chmod +x "$REBOOT_HELPER"
@@ -1236,20 +1420,13 @@ sync
 umount "$MNT" 2>/dev/null || true
 rm -rf "$STAGE_DIR" 2>/dev/null || true
 
-rip=$(get_router_ip)
 echo
-echo -e "${CLR_GREEN}============================================================${CLR_RESET}"
+echo -e "${CLR_GREEN}================================================================${CLR_RESET}"
 echo -e "${CLR_GREEN} Готово. Бэкап: $BACKUP_ARCHIVE${CLR_RESET}"
-    echo      
-    echo -e "${CLR_YELLOW} Бэкап доступен по локальной сети:${CLR_RESET}"
-    echo "    \\\\$rip\\overlaybackup"
-    echo "    пользователь: 12345"
-    echo "    пароль:       12345"
-    echo "  СКОПИРУЙТЕ ДО ПЕРЕЗАГРУЗКИ РОУТЕРА!!!"
-    echo
+echo -e "${CLR_YELLOW} Доступ к бэкапу по локальной сети: \\\\\\\\$(get_router_ip)\\overlaybackup (12345/12345)${CLR_RESET}"
 echo "    1) перезагрузить сейчас"
 echo "    2) выйти без перезагрузки"
-echo -e "${CLR_GREEN}============================================================${CLR_RESET}"
+echo -e "${CLR_GREEN}================================================================${CLR_RESET}"
 printf "Выбор: "
 read R
 case "$R" in
@@ -1265,6 +1442,7 @@ case "$R" in
         done
         printf "\r    осталось:  0 \n"
         echo "Перезагружаюсь..."
+        share_down
         sync
         reboot
         ;;
