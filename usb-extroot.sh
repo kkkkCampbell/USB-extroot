@@ -1,12 +1,20 @@
 #!/bin/sh
-# =====================================================================
-#  usb-extroot.sh  v0.1.10
+# ============================================================
+#  usb-extroot.sh  v0.1.11
 #  Перенос overlay OpenWrt на USB-накопитель (extroot)
-#  Лог: /tmp/usb-extroot.log (сброс в /root/usb-extroot.log в конце)
+#  Лог: /tmp/usb-extroot.log (сброс в overlay в конце)
 #  Бэкап: /tmp/.usb-extroot-x7k2m9q4p1w8/ (tmpfs, RAM)
-# =====================================================================
-
-
+# ============================================================
+# ------------------------------------------------------------
+#  Самопереезд в RAM.
+#
+#  Скрипт обычно лежит в /root (overlay). Когда overlay
+#  в процессе работы размонтируется и пересобирается,
+#  ядро теряет доступ к overlayfs-superblock, и построчное
+#  чтение скрипта начинает возвращать чужой или устаревший
+#  контент. Копируем себя в /tmp (tmpfs) и перезапускаемся
+#  оттуда — с этого момента overlay нам больше не важен.
+# ------------------------------------------------------------
 case "$0" in
     /tmp/*|/dev/shm/*|/run/*) ;;
     *)
@@ -20,7 +28,7 @@ case "$0" in
         ;;
 esac
 
-ver="v0.1.10"
+ver="v0.1.11"
 
 CLR_RESET="\033[0m"
 CLR_GREEN="\033[32m"
@@ -353,7 +361,7 @@ shout_fatal() {
 
     if [ "$share_present" = "1" ]; then
         echo -e "  Доступ к бэкапу по локальной сети: "
-        echo -e "  ${CLR_YELLOW}\\\\\\$(get_router_ip)\\overlaybackup${CLR_RESET} (user: 12345 password: 12345)"
+        echo -e "  ${CLR_YELLOW}\\\\\\\$(get_router_ip)\\overlaybackup${CLR_RESET} (user: 12345 password: 12345)"
         echo
     fi
 
@@ -708,11 +716,34 @@ quick_overlay_dev() {
     awk -v m="$mp" '$2==m {print $1; exit}' /proc/mounts
 }
 
-clear
+# ============================================================
+#  extroot уже активен?
+#    overlay смонтирован И его устройство — внешнее.
+# ============================================================
+extroot_active() {
+    local qdev
+    qdev=$(quick_overlay_dev)
+    [ -n "$qdev" ] || return 1
+    is_internal_dev "$qdev" && return 1
+    return 0
+}
 
-echo "============================================================"
-echo "usb-extroot.sh  ${ver}"
-cat <<'BANNER' 
+EXTROOT_ACTIVE=0
+EXTROOT_DEV=""
+if extroot_active; then
+    EXTROOT_ACTIVE=1
+    EXTROOT_DEV=$(quick_overlay_dev)
+fi
+
+# ============================================================
+#  МЕНЮ (цикл: возврат при недопустимом выборе)
+# ============================================================
+while :; do
+    clear
+
+    echo "============================================================"
+    echo "usb-extroot.sh  ${ver}"
+    cat <<'BANNER'
 Перенос overlay OpenWrt на USB-накопитель (extroot)
 ------------------------------------------------------------
  До ввода YES — только чтение.
@@ -721,25 +752,48 @@ cat <<'BANNER'
 ============================================================
 BANNER
 
-# ============================================================
-#  МЕНЮ
-# ============================================================
-echo
-echo -e "${CLR_YELLOW}Действие:${CLR_RESET}"
-echo "  1) форматировать и перенести overlay на USB-носитель"
-echo "  2) перенести без форматирования (удалить overlay-структуру)"
-echo "  3) восстановить загрузку с внутренней памяти роутера"
-echo "  0) выход"
-printf "Выбор: "
-read CHOICE
+    if [ "$EXTROOT_ACTIVE" = "1" ]; then
+        echo
+        echo -e "${CLR_ORANGE}overlay уже размещён на внешнем носителе: $EXTROOT_DEV${CLR_RESET}"
+        echo "  Пункты 1 и 2 недоступны."
+    fi
 
-case "$CHOICE" in
-    1) MODE=format; CHOICE_TEXT="форматировать и перенести overlay на USB-носитель" ;;
-    2) MODE=noformat; CHOICE_TEXT="перенести без форматирования" ;;
-    3) MODE=restore; CHOICE_TEXT="восстановить загрузку с внутренней памяти роутера" ;;
-    0|"") echo "Выход."; exit 0 ;;
-    *) die "меню" "Неизвестный выбор: '$CHOICE'" ;;
-esac
+    echo
+    echo -e "${CLR_YELLOW}Действие:${CLR_RESET}"
+    echo "  1) форматировать и перенести overlay на USB-носитель"
+    echo "  2) перенести без форматирования (удалить overlay-структуру)"
+    echo "  3) восстановить загрузку с внутренней памяти роутера"
+    echo "  0) выход"
+    printf "Выбор: "
+    read CHOICE
+
+    case "$CHOICE" in
+        1) MODE=format;   CHOICE_TEXT="форматировать и перенести overlay на USB-носитель" ;;
+        2) MODE=noformat; CHOICE_TEXT="перенести без форматирования" ;;
+        3) MODE=restore;  CHOICE_TEXT="восстановить загрузку с внутренней памяти роутера" ;;
+        0|"") echo "Выход."; exit 0 ;;
+        *)
+            echo
+            echo "Неизвестный выбор: '$CHOICE'"
+            sleep 2
+            continue
+            ;;
+    esac
+
+    if [ "$EXTROOT_ACTIVE" = "1" ] && [ "$MODE" != "restore" ]; then
+        echo
+        echo -e "${CLR_ORANGE}Невозможно: overlay уже на $EXTROOT_DEV.${CLR_RESET}"
+        echo "  Перенос на другой носитель пока не поддерживается."
+        echo "  Доступен пункт 3 (восстановление) или 0 (выход)."
+        echo
+        printf "  Нажмите Enter для продолжения (авто через 10с): "
+        read -t 10 _
+        echo
+        continue
+    fi
+
+    break
+done
 
 # ============================================================
 #  ВЕТКА 3 — восстановление загрузки с внутренней памяти
@@ -844,9 +898,11 @@ $UBI_DEV
     echo "      fstab в живой системе очищен."
 
     mkdir -p "$UBI_MNT/upper/root"
+
     cat > "$UBI_MNT/upper/root/reboot_after.sh" <<EOF
 #!/bin/sh
-WAIT_BEFORE_REBOOT=300
+# RESTORE
+WAIT_BEFORE_REBOOT=60
 
 rm -f /root/reboot_after.sh
 uci -q delete ksmbd.overlaybackup
@@ -859,18 +915,21 @@ sed -i '/^12345:/d' /etc/passwd
 sed -i '/^\/root\/reboot_after\.sh$/d' /etc/rc.local 2>/dev/null || true
 
 mkdir -p /overlay
-mount -t ubifs $UBI_DEV /overlay 2>/dev/null || true
 sleep 1
 sync
+sleep 1
 
 if ! mount | grep -q ' /rom/overlay '; then
-    echo "usb-extroot: /rom/overlay не обнаружен, ребут не нужен" > /dev/kmsg 2>/dev/null || true
     exit 0
 fi
 
-echo "usb-extroot: /rom/overlay найден, ребут через \${WAIT_BEFORE_REBOOT}s" > /dev/kmsg 2>/dev/null || true
 sleep "\$WAIT_BEFORE_REBOOT"
 reboot
+sleep 60
+reboot -f
+sleep 5
+echo b > /proc/sysrq-trigger
+
 EOF
     chmod +x "$UBI_MNT/upper/root/reboot_after.sh"
 
@@ -1302,7 +1361,7 @@ BACKUP_ARCHIVE="$BACKUP_DIR/overlay_backup_${TS}.tar.gz"
 echo "      поднимаю шару для доступа к бэкапу..."
 share_up
 echo -e "      Доступ к бэкапу по локальной сети: "
-echo -e "      ${CLR_YELLOW}\\\\\\$(get_router_ip)\\overlaybackup${CLR_RESET} (user: 12345 password: 12345)"
+echo -e "      ${CLR_YELLOW}\\\\\\\$(get_router_ip)\\overlaybackup${CLR_RESET} (user: 12345 password: 12345)"
 echo
 
 echo "      удаляю whiteouts из staging..."
@@ -1382,7 +1441,8 @@ cp /tmp/usb-extroot.log "$MNT/upper/root/usb-extroot.log" 2>/dev/null || true
 
 cat > "$REBOOT_HELPER" <<'EOF'
 #!/bin/sh
-WAIT_BEFORE_REBOOT=300
+# MAIN
+WAIT_BEFORE_REBOOT=120
 
 rm -f /root/reboot_after.sh
 uci -q delete ksmbd.overlaybackup
@@ -1395,16 +1455,21 @@ sed -i '/^12345:/d' /etc/passwd
 sed -i '/^\/root\/reboot_after\.sh$/d' /etc/rc.local 2>/dev/null || true
 
 mkdir -p /overlay
+sleep 1
 sync
+sleep 1
 
 if ! mount | grep -q ' /rom/overlay '; then
-    echo "usb-extroot: /rom/overlay не обнаружен, ребут не нужен" > /dev/kmsg 2>/dev/null || true
     exit 0
 fi
 
-echo "usb-extroot: /rom/overlay найден, ребут через ${WAIT_BEFORE_REBOOT}s" > /dev/kmsg 2>/dev/null || true
 sleep "$WAIT_BEFORE_REBOOT"
 reboot
+sleep 60
+reboot -f
+sleep 5
+echo b > /proc/sysrq-trigger
+
 EOF
 chmod +x "$REBOOT_HELPER"
 
