@@ -13,7 +13,7 @@
 Скопировать и вставить в терминал ссылку.  
 Нажать Ввод.
 
-    sh <( wget -qO- https://raw.githubusercontent.com/kkkkCampbell/master/refs/heads/extroot/usb-extroot.sh )
+    wget -qO /tmp/usb-extroot.sh https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/main/usb-extroot.sh && sh /tmp/usb-extroot.sh
 
 Меню:
 
