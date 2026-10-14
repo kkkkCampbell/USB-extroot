@@ -1,6 +1,6 @@
 #!/bin/sh
 # ============================================================
-#  usb-extroot.sh  v0.1.12
+#  usb-extroot.sh  v0.1.13
 #  Перенос overlay OpenWrt на USB-накопитель (extroot)
 #  Лог: /tmp/usb-extroot.log (сброс в overlay в конце)
 #  Бэкап: /tmp/.usb-extroot-x7k2m9q4p1w8/ (tmpfs, RAM)
@@ -36,7 +36,7 @@ case "$0" in
         ;;
 esac
 
-ver="v0.1.12"
+ver="v0.1.13"
 
 CLR_RESET="\033[0m"
 CLR_GREEN="\033[32m"
@@ -911,7 +911,7 @@ $UBI_DEV
     cat > "$UBI_MNT/upper/root/reboot_after.sh" <<EOF
 #!/bin/sh
 # RESTORE
-WAIT_BEFORE_REBOOT=60
+WAIT_BEFORE_REBOOT=120
 
 rm -f /root/reboot_after.sh
 uci -q delete ksmbd.overlaybackup
@@ -966,6 +966,7 @@ EOF
         y|Y|yes|YES)
             echo "Перезагружаюсь..."
             sync
+			sleep 2
             reboot
             ;;
         *)
@@ -1452,7 +1453,7 @@ cp /tmp/usb-extroot.log "$MNT/upper/root/usb-extroot.log" 2>/dev/null || true
 cat > "$REBOOT_HELPER" <<'EOF'
 #!/bin/sh
 # MAIN
-WAIT_BEFORE_REBOOT=60
+WAIT_BEFORE_REBOOT=120
 
 rm -f /root/reboot_after.sh
 uci -q delete ksmbd.overlaybackup
@@ -1498,8 +1499,8 @@ rm -rf "$STAGE_DIR" 2>/dev/null || true
 echo
 echo -e "${CLR_GREEN}================================================================${CLR_RESET}"
 echo -e "${CLR_GREEN} Готово. Бэкап: $BACKUP_ARCHIVE${CLR_RESET}"
-echo -e "${CLR_YELLOW}     Доступ к бэкапу по локальной сети: \\\\\\\\$(get_router_ip)\\overlaybackup${CLR_RESET}"
-echo -e "${CLR_YELLOW}     user: 12345   password: 12345${CLR_RESET}"
+echo -e "${CLR_YELLOW}    Доступ к бэкапу по локальной сети: \\\\\\\\$(get_router_ip)\\overlaybackup${CLR_RESET}"
+echo -e "${CLR_YELLOW}    user: 12345   password: 12345${CLR_RESET}"
 echo
 echo "    1) перезагрузить сейчас"
 echo "    2) выйти без перезагрузки"
