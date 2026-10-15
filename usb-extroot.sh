@@ -866,6 +866,7 @@ load_dependencies() {
         mv -f "$new_switch" "/tmp/switch-overlay.sh"
         . /tmp/clone-overlay.sh
         . /tmp/switch-overlay.sh
+		sleep 2
         return 0
     fi
 
