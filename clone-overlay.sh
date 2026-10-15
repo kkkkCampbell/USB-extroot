@@ -312,8 +312,8 @@ clone_overlay_interactive() {
     fi
 
     echo
-    echo "      источник: $CLONE_SRC_DEV ($CLONE_SRC_MP)"
-    echo "      цель:     $CLONE_DST_DEV"
+    echo -e "${CLR_GREEN}      источник: $CLONE_SRC_DEV ($CLONE_SRC_MP)"
+    echo -e "${CLR_ORANGE}      цель:     $CLONE_DST_DEV${CLR_RESET}"
     echo
 
     if ! clone_overlay_prepare_target; then
