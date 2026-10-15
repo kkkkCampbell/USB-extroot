@@ -108,7 +108,7 @@ switch_overlay_choose_target() {
     n=0
     while IFS='|' read -r dev desc; do
         n=$((n + 1))
-        echo "  $n) $desc"
+        echo -e "${CLR_GREEN}  $n) $desc${CLR_RESET}"
     done < "$list"
 	echo
     printf "Выберите (1-%d, 0 — отмена): " "$n"
@@ -356,7 +356,7 @@ second_drive_menu() {
     if clone_overlay_find_source; then
         cur_desc=$(describe "$CLONE_SRC_DEV")
     else
-        cur_desc="(внутренний носитель / NAND)"
+        cur_desc="(Роутер / NAND)"
     fi
 
     while :; do
@@ -366,19 +366,19 @@ second_drive_menu() {
         echo "============================================================"
         echo
         echo -e "${CLR_YELLOW}Текущий загрузочный:${CLR_RESET}"
-        echo "    $cur_desc"
+        echo -e "    ${CLR_GREEN}$cur_desc${CLR_RESET}"
         echo
-        echo "Действие:"
-        echo "  1) назначить загрузочным другой накопитель"
+        echo -e "${CLR_YELLOW}Действие:${CLR_RESET}"
+        echo "  1) Назначить загрузочным другой накопитель"
         echo "     (нужен накопитель с валидным оверлеем)"
         echo
-        echo "  2) склонировать overlay на другой накопитель"
+        echo "  2) Клонировать текущий на другой накопитель"
         echo "     и назначить его загрузочным"
         echo
-        echo "  3) склонировать текущий накопитель"
+        echo "  3) Клонировать текущий на другой накопитель"
         echo
-        echo "  0) возврат в предыдущее меню"
-        printf "Выбор: "
+        echo "  0) Возврат в предыдущее меню"
+        printf "${CLR_YELLOW}Выбор: ${CLR_RESET}"
         read CHOICE
 
         case "$CHOICE" in
