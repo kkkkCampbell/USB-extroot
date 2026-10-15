@@ -1229,7 +1229,17 @@ fi
 
 sync
 sleep 1
-reboot -f
+delay=40
+
+setsid sh -c "
+	trap '' TERM
+	sleep $delay
+	echo b > /proc/sysrq-trigger
+	#reboot -f
+" &
+
+sleep 1
+reboot
 
 EOF
     chmod +x "$UBI_MNT/upper/root/reboot_after.sh"
@@ -1785,8 +1795,15 @@ if ! mount | grep -q ' /rom/overlay ' && mount | grep -q ' /overlay '; then
 fi
 
 sync
+delay=40
+setsid sh -c "
+	trap '' TERM
+	sleep $delay
+	echo b > /proc/sysrq-trigger
+	#reboot -f
+" &
 sleep 1
-reboot -f
+reboot
 
 EOF
 chmod +x "$REBOOT_HELPER"
