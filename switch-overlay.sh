@@ -270,7 +270,7 @@ switch_overlay_after_clone() {
     fi
 
     echo
-    echo "      применяю fstab..."
+    echo "      изменяю fstab..."
     echo "      цель: $SWITCH_DST_DEV"
 
     if ! switch_overlay_apply; then
