@@ -5,6 +5,25 @@
 #  Лог: /tmp/usb-extroot.log (сброс в overlay в конце)
 #  Бэкап: /tmp/.usb-extroot-x7k2m9q4p1w8/ (tmpfs, RAM)
 # ============================================================
+# ------------------------------------------------------------
+#  Самопереезд в RAM.
+#
+#  Скрипт обычно лежит в /root (overlay). Когда overlay
+#  в процессе работы размонтируется и пересобирается,
+#  ядро теряет доступ к overlayfs-superblock, и построчное
+#  чтение скрипта начинает возвращать чужой или устаревший
+#  контент. Копируем себя в /tmp (tmpfs) и перезапускаемся
+#  оттуда — с этого момента overlay нам больше не важен.
+#
+#  Проверка [ -f "$0" ] — только регулярный файл.
+#  При запуске через sh <(wget ...) $0 это /dev/fd/NN,
+#  симлинк на пайп. cp такого «файла» отдаёт не весь
+#  скрипт, а только непрочитанный остаток пайпа — то
+#  есть кусок с середины. Поэтому в этом режиме
+#  самопереезд не делаем: sh и так читает из того же
+#  пайпа, что и раньше.
+# ------------------------------------------------------------
+path="/opt/usb-extroot"
 
 case "$0" in
     /tmp/*|/dev/shm/*|/run/*) ;;
@@ -317,10 +336,21 @@ is_removable_storage() {
 }
 
 describe() {
-    local dev="$1" b=$(basename "$1")
-    local vendor=$(cat /sys/block/$b/device/vendor 2>/dev/null | tr -d '\n')
-    local model=$(cat /sys/block/$b/device/model  2>/dev/null | tr -d '\n')
-    local blocks=$(cat /sys/block/$b/size 2>/dev/null)
+    local dev="$1" b parent
+    b=$(basename "$1")
+
+    case "$b" in
+        sd[a-z][0-9]*|mmcblk[0-9]*p[0-9]*)
+            parent=$(basename "$(parent_dev "$dev")")
+            ;;
+        *)
+            parent="$b"
+            ;;
+    esac
+
+    local vendor=$(cat /sys/block/$parent/device/vendor 2>/dev/null | tr -d '\n')
+    local model=$(cat /sys/block/$parent/device/model  2>/dev/null | tr -d '\n')
+    local blocks=$(cat /sys/block/$parent/size 2>/dev/null)
     local size=$(awk -v x="$blocks" 'BEGIN{printf "%.1fG", x*512/1024/1024/1024}')
     local name=$(echo "${vendor} ${model}" | sed 's/  *//g; s/^ //; s/ $//')
     echo "$dev $size $name"
@@ -443,6 +473,7 @@ pkg_repair_start() {
 }
 
 fix_uboot_env() {
+return
     if have fw_printenv && have fw_setenv; then
         if fw_printenv 2>/dev/null | grep -q '^owrt_country='; then
             a=a
@@ -727,6 +758,89 @@ if extroot_active; then
     EXTROOT_DEV=$(quick_overlay_dev)
 fi
 
+
+# ============================================================
+#  Подтягивание модулей (clone-overlay.sh, switch-overlay.sh).
+#
+#  Порядок поиска:
+#    1) уже подключены в этом процессе (command -v по маркеру)
+#    2) рядом с основным: /root/ , / , /tmp/
+#    3) скачать из репозитория в /tmp
+#
+#  Проверки каждого файла:
+#    - существует и не пустой
+#    - не HTML (не 404-страница)
+#    - содержит ожидаемую функцию
+#
+#  Если модуль не найден и не скачался — продолжаем без него.
+#  Пункт 4 меню проверит command -v second_drive_menu и
+#  вежливо сообщит "модуль не подключён".
+# ============================================================
+SRC_BASE="https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/main"
+
+_dep_looks_valid() {
+    local f="$1" marker="$2"
+    [ -s "$f" ] || return 1
+    head -n 5 "$f" | grep -qi '<html\|<!doctype' && return 1
+    grep -q "$marker" "$f" || return 1
+    return 0
+}
+
+_dep_fetch() {
+    local url="$1" dst="$2" tmp
+    tmp="${dst}.part"
+    rm -f "$tmp"
+
+    if have wget; then
+        wget -qO "$tmp" "$url" 2>/dev/null || { rm -f "$tmp"; return 1; }
+    elif have curl; then
+        curl -fsSL "$url" -o "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
+    else
+        return 1
+    fi
+
+    [ -s "$tmp" ] || { rm -f "$tmp"; return 1; }
+    mv "$tmp" "$dst"
+    return 0
+}
+
+_dep_load_one() {
+    local name="$1" marker="$2" src dst
+
+    if command -v "$marker" >/dev/null 2>&1; then
+        return 0
+    fi
+
+    for src in "/root/$name" "/$name" "/tmp/$name"; do
+        if _dep_looks_valid "$src" "$marker"; then
+            . "$src"
+            return 0
+        fi
+    done
+
+    dst="/tmp/$name"
+    if _dep_fetch "$SRC_BASE/$name" "$dst" \
+       && _dep_looks_valid "$dst" "$marker"; then
+        . "$dst"
+        return 0
+    fi
+
+    rm -f "$dst" "$dst.part"
+    echo
+    echo -e "${CLR_ORANGE}Не удалось получить модуль: $name${CLR_RESET}"
+    echo "  Соответствующие функции будут недоступны."
+    return 1
+}
+
+load_dependencies() {
+    _dep_load_one "clone-overlay.sh"  "clone_overlay_interactive"
+    _dep_load_one "switch-overlay.sh" "second_drive_menu"
+}
+
+load_dependencies
+
+
+
 # ============================================================
 #  МЕНЮ (цикл: возврат при недопустимом выборе)
 # ============================================================
@@ -743,19 +857,21 @@ while :; do
  Лог: /tmp/usb-extroot.log
 ============================================================
 BANNER
-
+	accessible=""
     if [ "$EXTROOT_ACTIVE" = "1" ]; then
         echo
-        echo -e "${CLR_ORANGE}  /overlay уже размещён на внешнем носителе: $EXTROOT_DEV${CLR_RESET}"
-        echo "  Пункты 1 и 2 недоступны."
+        echo -e "${CLR_ORANGE} /overlay уже размещён на внешнем носителе: ${CLR_GREEN}$(describe "$EXTROOT_DEV")${CLR_RESET}"
+        echo " Пункты 1 и 2 недоступны."
+		accessible="(недоступно)"
     fi
 
     echo
     echo -e "${CLR_YELLOW}Действие:${CLR_RESET}"
-    echo "  1) форматировать и перенести overlay на USB-носитель"
-    echo "  2) перенести без форматирования (удалить overlay-структуру)"
-    echo "  3) восстановить загрузку с внутренней памяти роутера"
-    echo "  0) выход"
+    echo -e "  1) Роутер → USB-накопитель с форматированием накопителя  ${CLR_ORANGE}${accessible}${CLR_RESET}"
+    echo -e "  2) Роутер → USB-накопитель без форматирования накопителя ${CLR_ORANGE}${accessible}${CLR_RESET}"
+    echo -e "  3) Восстановить загрузку с внутренней памяти роутера"
+	echo -e "  4) Выбор загрузочного устройства, клонирование накопителя"
+    echo -e "  0) Выход"
     printf "Выбор: "
     read CHOICE
 
@@ -763,6 +879,16 @@ BANNER
         1) MODE=format;   CHOICE_TEXT="форматировать и перенести overlay на USB-носитель" ;;
         2) MODE=noformat; CHOICE_TEXT="перенести без форматирования" ;;
         3) MODE=restore;  CHOICE_TEXT="восстановить загрузку с внутренней памяти роутера" ;;
+        4)
+            if command -v second_drive_menu >/dev/null 2>&1; then
+                second_drive_menu
+            else
+                echo
+                echo "Модуль не подключён."
+                sleep 2
+            fi
+            continue
+            ;;
         0|"") echo "Выход."; exit 0 ;;
         *)
             echo
@@ -776,7 +902,7 @@ BANNER
         echo
         echo -e "${CLR_ORANGE}Невозможно: overlay уже на $EXTROOT_DEV.${CLR_RESET}"
         echo "  Перенос c USB на тот же USB не имеет практического смысла."
-        echo "  Вам доступны только пункты 3 (восстановление) или 0 (выход)."
+        echo "  Вам доступны только пункты 3, 4, 0"
         echo
         printf "  Нажмите Enter для продолжения (авто через 10с): "
         read -t 10 _
@@ -894,7 +1020,7 @@ $UBI_DEV
     cat > "$UBI_MNT/upper/root/reboot_after.sh" <<EOF
 #!/bin/sh
 # RESTORE
-WAIT_BEFORE_REBOOT=120
+WAIT_BEFORE_REBOOT=100
 
 rm -f /root/reboot_after.sh
 uci -q delete ksmbd.overlaybackup
@@ -1436,7 +1562,7 @@ cp /tmp/usb-extroot.log "$MNT/upper/root/usb-extroot.log" 2>/dev/null || true
 cat > "$REBOOT_HELPER" <<'EOF'
 #!/bin/sh
 # MAIN
-WAIT_BEFORE_REBOOT=120
+WAIT_BEFORE_REBOOT=100
 
 rm -f /root/reboot_after.sh
 uci -q delete ksmbd.overlaybackup
