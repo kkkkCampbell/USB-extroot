@@ -1,4 +1,4 @@
-# USB-extroot
+# USB-extroot (v0.1.15)
 
 Перенос overlay OpenWrt на USB-накопитель (extroot) с поддержкой отката.  
 Увеличивает объём доступной ROM до объёма USB-накопителя.  
