@@ -1,6 +1,6 @@
 #!/bin/sh
 # ============================================================
-#  usb-extroot.sh  v0.1.14
+#  usb-extroot.sh  v0.1.15
 #  Перенос overlay OpenWrt на USB-накопитель (extroot)
 #  Лог: /tmp/usb-extroot.log (сброс в overlay в конце)
 #  Бэкап: /tmp/.usb-extroot-x7k2m9q4p1w8/ (tmpfs, RAM)
@@ -24,6 +24,7 @@
 #  пайпа, что и раньше.
 # ------------------------------------------------------------
 path="/opt/usb-extroot"
+TEST_MODE=0
 
 case "$0" in
     /tmp/*|/dev/shm/*|/run/*) ;;
@@ -38,7 +39,7 @@ case "$0" in
         ;;
 esac
 
-ver="v0.1.14"
+ver="v0.1.15"
 
 CLR_RESET="\033[0m"
 CLR_GREEN="\033[32m"
@@ -178,6 +179,33 @@ pkg_repair_finish() {
     PKG_REPAIR_ACTIVE=0
 }
 
+# ============================================================
+#  Мягкий ребут с fallback на жёсткий.
+#
+#  Логика:
+#    1. Запускаем сторож в отдельной сессии (setsid).
+#       Сторож игнорирует SIGTERM и спит $delay секунд.
+#    2. В основном процессе делаем мягкий `reboot`:
+#       - если он сработает — система уходит, сторож умирает вместе с ней;
+#       - если залипнет после SIGTERM и до SIGKILL — сторож выживет,
+#         доспит и дёрнет `reboot -f`.
+#    3. Через $delay секунд сторож делает `reboot -f`.
+#
+#  $1 — таймаут в секундах (по умолчанию 40).
+# ============================================================
+soft_reboot_with_fallback() {
+    local delay="${1:-40}"
+
+    setsid sh -c "
+        trap '' TERM
+        sleep $delay
+        echo b > /proc/sysrq-trigger
+		#reboot -f
+    " &
+
+    sleep 1
+    reboot
+}
 die() {
     pkg_repair_finish
     echo
@@ -207,64 +235,11 @@ fatal() {
     exit 1
 }
 
-pkg_fail() {
-    local stage="$1" pkg="$2" pm="$3"
-    local extra=""
-    if [ "$pm" = "apk" ]; then
-        extra="Репозитории apk:
-  /etc/apk/repositories
-  /etc/apk/repositories.d/"
-    else
-        extra="Репозитории opkg:
-  /etc/opkg.conf
-  /etc/opkg/customfeeds.conf
-  /etc/opkg/distfeeds.conf"
-    fi
-    die "$stage" "Не удалось установить пакет: $pkg
-Менеджер пакетов: $pm
-
-Скорее всего:
-  - нет доступа к репозиториям, или
-  - пакет заблокирован / отсутствует в фиде
-
-Проверь вручную:
-  $pm update
-  $pm add $pkg
-
-$extra
-
-Если ставится — запусти скрипт заново.
-Если нет — поставь пакеты сам и вернись."
-}
-
 detect_pm() {
     if command -v apk  >/dev/null 2>&1; then echo apk
     elif command -v opkg >/dev/null 2>&1; then echo opkg
     else echo none
     fi
-}
-
-pkg_install() {
-    local pkg="$1" pm="$2"
-    case "$pm" in
-        apk)  apk add "$pkg" ;;
-        opkg) opkg update && opkg install "$pkg" ;;
-        *)    return 1 ;;
-    esac
-}
-
-pkg_present() {
-    local pkg="$1" pm="$2"
-    case "$pkg" in
-        block-mount)  have block && return 0 ;;
-        kmod-fs-ext4) grep -q ext4 /proc/filesystems 2>/dev/null && return 0 ;;
-        e2fsprogs)    have mkfs.ext4 && return 0 ;;
-    esac
-    case "$pm" in
-        apk)  apk info -e "$pkg" >/dev/null 2>&1 ;;
-        opkg) opkg list-installed 2>/dev/null | grep -q "^$pkg " ;;
-        *)    return 1 ;;
-    esac
 }
 
 # ============================================================
@@ -520,6 +495,206 @@ storage_quick_check() {
     return 1
 }
 
+# ============================================================
+#  Система зависимостей.
+#
+#  DEP_<набор>_CMDS  — команды вида "cmd:pkg"
+#  DEP_<набор>_FS    — файловые системы вида "fs:kmod"
+#
+#  Наборы:
+#    base  — то, что нужно скрипту в любой операции
+#    ext4  — то, что нужно только для операций с ext4 (запись)
+#
+#  Спец-проверки:
+#    GNU tar (для base) — find_gnu_tar
+#    Сеть (для base)    — есть wget или curl
+# ============================================================
+
+DEP_BASE_CMDS="
+awk:busybox
+sed:busybox
+grep:busybox
+cat:busybox
+head:busybox
+cut:busybox
+tr:busybox
+cp:busybox
+mv:busybox
+rm:busybox
+mkdir:busybox
+rmdir:busybox
+chmod:busybox
+ln:busybox
+sleep:busybox
+sync:busybox
+printf:busybox
+find:busybox
+tee:busybox
+mkfifo:busybox
+mount:busybox
+umount:busybox
+df:busybox
+du:busybox
+basename:busybox
+dirname:busybox
+readlink:busybox
+block:block-mount
+uci:uci
+"
+
+DEP_BASE_FS="
+ubifs:kmod-fs-ubifs
+"
+
+DEP_EXT4_CMDS="
+mkfs.ext4:e2fsprogs
+"
+
+DEP_EXT4_FS="
+ext4:kmod-fs-ext4
+"
+
+DEP_NET="wget:wget-ssl curl:curl"
+
+# ------------------------------------------------------------
+#  Поиск GNU tar. Возвращает путь через stdout.
+# ------------------------------------------------------------
+find_gnu_tar() {
+    local cand
+    for cand in tar /usr/bin/tar /usr/libexec/tar-gnu /bin/tar; do
+        if [ -x "$cand" ] || have "$cand"; then
+            if $cand --version 2>&1 | grep -qi 'GNU tar'; then
+                echo "$cand"
+                return 0
+            fi
+        fi
+    done
+    return 1
+}
+
+# ------------------------------------------------------------
+#  Батч-установка (один вызов pm, а не по пакету)
+# ------------------------------------------------------------
+install_pkgs() {
+    local pm="$1" pkgs="$2"
+    [ -n "$pkgs" ] || return 0
+    case "$pm" in
+        apk)  apk add $pkgs ;;
+        opkg) opkg update >/dev/null 2>&1
+              opkg install $pkgs ;;
+        *)    return 1 ;;
+    esac
+}
+
+# ------------------------------------------------------------
+#  Проверить и, при необходимости, доустановить зависимости.
+#  $1 — набор: base | ext4
+# ------------------------------------------------------------
+deps_ensure() {
+    local set="$1"
+    local cmds fs_list missing still entry cmd pkg fs found_net
+
+    case "$set" in
+        base)
+            cmds="$DEP_BASE_CMDS"
+            fs_list="$DEP_BASE_FS"
+            ;;
+        ext4)
+            cmds="$DEP_EXT4_CMDS"
+            fs_list="$DEP_EXT4_FS"
+            ;;
+        *)
+            echo "deps_ensure: неизвестный набор '$set'"
+            return 1
+            ;;
+    esac
+
+    missing=""
+
+    for entry in $cmds; do
+        cmd="${entry%%:*}"
+        pkg="${entry#*:}"
+        if ! have "$cmd"; then
+            case " $missing " in
+                *" $pkg "*) ;;
+                *) missing="$missing $pkg" ;;
+            esac
+        fi
+    done
+
+    for entry in $fs_list; do
+        fs="${entry%%:*}"
+        pkg="${entry#*:}"
+        if ! grep -qw "$fs" /proc/filesystems 2>/dev/null; then
+            case " $missing " in
+                *" $pkg "*) ;;
+                *) missing="$missing $pkg" ;;
+            esac
+        fi
+    done
+
+    # Спец-проверки только для base
+    if [ "$set" = "base" ]; then
+        if ! find_gnu_tar >/dev/null 2>&1; then
+            case " $missing " in
+                *" tar "*) ;;
+                *) missing="$missing tar" ;;
+            esac
+        fi
+
+        found_net=0
+        for entry in $DEP_NET; do
+            cmd="${entry%%:*}"
+            if have "$cmd"; then found_net=1; break; fi
+        done
+        [ "$found_net" = "0" ] && missing="$missing wget-ssl"
+    fi
+
+    missing=$(echo "$missing" | sed 's/^ *//; s/ *$//')
+
+    if [ -z "$missing" ]; then
+        return 0
+    fi
+
+    echo -e "      ${CLR_ORANGE}отсутствуют: $missing${CLR_RESET}"
+
+    if [ "$PM" = "none" ]; then
+        echo -e "${CLR_ORANGE}Нет ни apk, ни opkg — установить нельзя.${CLR_RESET}"
+        return 1
+    fi
+
+    echo "      подготовка сети (DNS, блокировщики)..."
+    pkg_repair_start || echo "      сеть не тронута (нечего чинить)"
+
+    echo "      устанавливаю..."
+    if ! install_pkgs "$PM" "$missing"; then
+        pkg_repair_finish
+        echo -e "${CLR_ORANGE}Установка не удалась: $missing${CLR_RESET}"
+        return 1
+    fi
+
+    echo "      восстанавливаю сеть..."
+    pkg_repair_finish
+
+    # Повторная проверка — то, что реально встало
+    still=""
+    for entry in $cmds; do
+        cmd="${entry%%:*}"
+        have "$cmd" || still="$still $cmd"
+    done
+    for entry in $fs_list; do
+        fs="${entry%%:*}"
+        grep -qw "$fs" /proc/filesystems 2>/dev/null || still="$still $fs"
+    done
+
+    if [ -n "$still" ]; then
+        echo -e "${CLR_ORANGE}После установки всё ещё нет:$still${CLR_RESET}"
+        return 1
+    fi
+
+    return 0
+}
+
 stage0_deps() {
     echo
     STAGE0="[0/9] зависимости"
@@ -527,88 +702,28 @@ stage0_deps() {
     PM=$(detect_pm)
     echo "      менеджер пакетов: $PM"
 
-    MISSING_PKGS=""
-    for cmd in awk sed grep mount umount df du basename dirname readlink block mkfs.ext4 uci; do
-        if ! have "$cmd"; then
-            case "$cmd" in
-                block)     pkg=block-mount ;;
-                mkfs.ext4) pkg=e2fsprogs ;;
-                uci)       pkg=uci ;;
-                *)         pkg=busybox ;;
-            esac
-            MISSING_PKGS="$MISSING_PKGS $pkg"
-        fi
-    done
+    if ! deps_ensure base; then
+        die "$STAGE0" "Базовые зависимости не установлены.
 
-    TARBIN=""
-    for cand in tar /usr/bin/tar /usr/libexec/tar-gnu /bin/tar; do
-        if [ -x "$cand" ] || have "$cand"; then
-            if $cand --version 2>&1 | grep -qi 'GNU tar'; then
-                TARBIN="$cand"; break
-            fi
-        fi
-    done
-    if [ -z "$TARBIN" ]; then
-        MISSING_PKGS="$MISSING_PKGS tar"
+Проверь вручную:
+  $PM update
+  $PM add <пакеты из сообщения выше>
+
+Если что-то недоступно в фиде — поставь вручную и запусти скрипт заново."
     fi
 
-    MISSING_PKGS=$(echo "$MISSING_PKGS" | tr ' ' '\n' | sort -u | tr '\n' ' ')
-    MISSING_PKGS=$(echo "$MISSING_PKGS" | sed 's/^ *//; s/ *$//')
-
-    if [ -n "$MISSING_PKGS" ]; then
-        echo -e "      ${CLR_ORANGE}не хватает пакетов: $MISSING_PKGS${CLR_RESET}"
-
-        if [ "$PM" = "none" ]; then
-            die "$STAGE0" "Нет ни apk, ни opkg — установить зависимости нельзя.
-
-Не хватает: $MISSING_PKGS
-
-Поставь пакеты вручную и запусти скрипт заново."
-        fi
-
-        echo "      подготовка сети (DNS, блокировщики)..."
-        pkg_repair_start || echo "      сеть не тронута (нечего чинить)"
-
-        for pkg in $MISSING_PKGS; do
-            echo "      устанавливаю $pkg..."
-            if ! pkg_install "$pkg" "$PM"; then
-                pkg_fail "$STAGE0" "$pkg" "$PM"
-            fi
-        done
-
-        echo "      восстанавливаю сеть..."
-        pkg_repair_finish
-    else
-        echo -e "${CLR_GREEN}      все пакеты на месте${CLR_RESET}"
-    fi
-    echo "      повторная проверка..."
-    TARBIN=""
-    for cand in tar /usr/bin/tar /usr/libexec/tar-gnu /bin/tar; do
-        if [ -x "$cand" ] || have "$cand"; then
-            if $cand --version 2>&1 | grep -qi 'GNU tar'; then
-                TARBIN="$cand"; break
-            fi
-        fi
-    done
+    TARBIN=$(find_gnu_tar)
     if [ -z "$TARBIN" ]; then
-        die "$STAGE0" "GNU tar не найден и не установился.
+        die "$STAGE0" "GNU tar не найден.
 
   command -v tar  -> $(command -v tar 2>/dev/null || echo 'нет')
   tar --version    -> $(tar --version 2>&1 | head -1)
-  ls -la /usr/bin/tar /usr/libexec/tar-gnu /bin/tar
-$(ls -la /usr/bin/tar /usr/libexec/tar-gnu /bin/tar 2>&1)
 
-Проверь PATH: echo \$PATH
-Поставь GNU tar вручную и запусти скрипт заново."
+Поставь GNU tar и запусти скрипт заново."
     fi
-    echo -e "      GNU tar: ${CLR_GREEN}$TARBIN${CLR_RESET}"
 
-    for cmd in awk sed grep mount umount df du basename dirname readlink block mkfs.ext4 uci; do
-        if ! have "$cmd"; then
-            die "$STAGE0" "После установки нет команды: $cmd"
-        fi
-    done
-    echo -e "${CLR_GREEN}      все обязательные команды на месте${CLR_RESET}"
+    echo -e "${CLR_GREEN}      базовые зависимости на месте${CLR_RESET}"
+    echo -e "${CLR_GREEN}      GNU tar: ${TARBIN}${CLR_RESET}"
 }
 
 stage1_overlay() {
@@ -683,18 +798,28 @@ stage2_find_usb() {
         TARGET="$1"
     else
         echo "Найдено несколько внешних накопителей:"
-        for d in $DISKS; do echo "  $(describe $d)"; done
-        printf "Укажите целевой (например /dev/sda): "
-        read TARGET
-        ok=0
+        n=0
         for d in $DISKS; do
-            [ "$d" = "$TARGET" ] && ok=1
+            n=$((n + 100))
+            echo -e "  ${CLR_YELLOW}$n -> ${CLR_GREEN}$(describe $d)  ${CLR_RESET}"
         done
-        if [ "$ok" != "1" ]; then
-            die "$STAGE2" "Выбранный диск не из списка: $TARGET
+        echo
+        printf "${CLR_RESET}Укажите целевой (введите число слева): "
+        read CHOSEN
 
-Доступные:
-$(for d in $DISKS; do echo "  $d"; done)"
+        ok=0
+        n=0
+        for d in $DISKS; do
+            n=$((n + 100))
+            if [ "$n" = "$CHOSEN" ]; then
+                TARGET="$d"
+                ok=1
+                break
+            fi
+        done
+
+        if [ "$ok" != "1" ]; then
+            die "$STAGE2" "Выбран несуществующий номер: $CHOSEN"
         fi
     fi
 
@@ -723,7 +848,7 @@ $(for d in $DISKS; do echo "  $d"; done)"
         fi
     fi
 
-    echo -e "${CLR_YELLOW}      ЦЕЛЬ: $DESC${CLR_RESET}"
+    echo -e "      ЦЕЛЬ:${CLR_YELLOW}   $DESC${CLR_RESET}"
     for p in $PARTS; do
         f=$(block info "$p" 2>/dev/null | grep -o 'TYPE="[^"]*"' | cut -d'"' -f2)
         m=$(block info "$p" 2>/dev/null | grep -o 'MOUNT="[^"]*"' | cut -d'"' -f2)
@@ -757,25 +882,6 @@ if extroot_active; then
     EXTROOT_ACTIVE=1
     EXTROOT_DEV=$(quick_overlay_dev)
 fi
-
-
-# ============================================================
-#  Подтягивание модулей (clone-overlay.sh, switch-overlay.sh).
-#
-#  Порядок поиска:
-#    1) уже подключены в этом процессе (command -v по маркеру)
-#    2) рядом с основным: /root/ , / , /tmp/
-#    3) скачать из репозитория в /tmp
-#
-#  Проверки каждого файла:
-#    - существует и не пустой
-#    - не HTML (не 404-страница)
-#    - содержит ожидаемую функцию
-#
-#  Если модуль не найден и не скачался — продолжаем без него.
-#  Пункт 4 меню проверит command -v second_drive_menu и
-#  вежливо сообщит "модуль не подключён".
-# ============================================================
 
 # ============================================================
 #  Подтягивание модулей (clone-overlay.sh, switch-overlay.sh).
@@ -840,7 +946,7 @@ _dep_try_download() {
 
 _dep_find_local() {
     local name="$1" marker="$2" src
-    for src in "/root/$name" "/$name" "/tmp/$name"; do
+    for src in "/root/$name" "/$name" "/opt/usb-extroot" "/tmp/$name"; do
         if _dep_looks_valid "$src" "$marker"; then
             echo "$src"
             return 0
@@ -854,24 +960,42 @@ load_dependencies() {
     local new_switch="/tmp/switch-overlay.sh.new"
     local ok_clone=0 ok_switch=0
     local local_clone local_switch
-
+	clear
+	echo
+	echo "Скачиваю модули с github"
+	sleep 1
     echo "      проверяю модули..."
 
-    _dep_try_download "clone-overlay.sh"  "clone_overlay_interactive" "$new_clone"  && ok_clone=1
-    _dep_try_download "switch-overlay.sh" "second_drive_menu"          "$new_switch" && ok_switch=1
+	if [ "$TEST_MODE" != "1" ]; then
+        _dep_try_download "clone-overlay.sh"  "clone_overlay_interactive" "$new_clone"  && ok_clone=1
+        _dep_try_download "switch-overlay.sh" "second_drive_menu"          "$new_switch" && ok_switch=1
 
-    if [ "$ok_clone" = "1" ] && [ "$ok_switch" = "1" ]; then
-        echo -e "${CLR_GREEN}      оба модуля получены с GitHub${CLR_RESET}"
-        mv -f "$new_clone"  "/tmp/clone-overlay.sh"
-        mv -f "$new_switch" "/tmp/switch-overlay.sh"
-        . /tmp/clone-overlay.sh
-        . /tmp/switch-overlay.sh
-		sleep 2
-        return 0
+        if [ "$ok_clone" = "1" ] && [ "$ok_switch" = "1" ]; then
+            echo -e "${CLR_GREEN}      оба модуля получены с GitHub${CLR_RESET}"
+
+            # Использовать сейчас — из /tmp
+            mv -f "$new_clone"  "/tmp/clone-overlay.sh"
+            mv -f "$new_switch" "/tmp/switch-overlay.sh"
+
+            # Сохранить на будущее — в $path
+            if [ -w "$(dirname "$path")" ] || [ -w "$path" ]; then
+                mkdir -p "$path" 2>/dev/null
+                cp -f /tmp/clone-overlay.sh  "$path/clone-overlay.sh"  2>/dev/null
+                cp -f /tmp/switch-overlay.sh "$path/switch-overlay.sh" 2>/dev/null
+                echo "      сохранены в $path"
+            fi
+
+            . /tmp/clone-overlay.sh
+            . /tmp/switch-overlay.sh
+            sleep 2
+            return 0
+        fi
+
+        rm -f "$new_clone" "$new_switch"
+        echo -e "${CLR_ORANGE}      не оба модуля доступны с GitHub, использую локальные${CLR_RESET}"
+    else
+        echo -e "${CLR_YELLOW}      TEST_MODE=1 — GitHub не опрашиваю${CLR_RESET}"
     fi
-
-    rm -f "$new_clone" "$new_switch"
-    echo -e "${CLR_ORANGE}      не оба модуля доступны с GitHub, использую локальные${CLR_RESET}"
 
     local_clone=$(_dep_find_local "clone-overlay.sh"  "clone_overlay_interactive")
     local_switch=$(_dep_find_local "switch-overlay.sh" "second_drive_menu")
@@ -898,10 +1022,7 @@ load_dependencies() {
     return 0
 }
 
-
 load_dependencies
-
-
 
 # ============================================================
 #  МЕНЮ (цикл: возврат при недопустимом выборе)
@@ -1138,7 +1259,7 @@ EOF
             echo "Перезагружаюсь..."
             sync
 			sleep 2
-            reboot
+            soft_reboot_with_fallback 40
             ;;
         *)
             echo "Ок, перезагрузи вручную."
@@ -1260,17 +1381,16 @@ echo -e "Подтверждено: ${CLR_YELLOW}$TARGET ($MODE)${CLR_RESET}."
 echo
 STAGE5="[5/9] пакеты"
 echo "$STAGE5 ..."
-for pkg in block-mount kmod-fs-ext4 e2fsprogs; do
-    if pkg_present "$pkg" "$PM"; then
-        echo -e "      $pkg: ${CLR_GREEN}есть${CLR_RESET}"
-    else
-        echo
-        echo -e "      $pkg: ${CLR_ORANGE}нет — ставлю...${CLR_RESET}"
-        if ! pkg_install "$pkg" "$PM"; then
-            pkg_fail "$STAGE5" "$pkg" "$PM"
-        fi
-    fi
-done
+
+if ! deps_ensure ext4; then
+    die "$STAGE5" "Не удалось подготовить пакеты для работы с ext4.
+
+Проверь вручную:
+  $PM update
+  $PM add kmod-fs-ext4 e2fsprogs"
+fi
+
+echo -e "${CLR_GREEN}      пакеты для ext4 на месте${CLR_RESET}"
 
 # ============================================================
 #  ШАГ 6. Staging
@@ -1436,16 +1556,25 @@ Staging цел: $STAGE_DIR"
         sync
         sleep 1
 
+        echo "      освобождаю $PART перед mkfs..."
+        i=0
+        while [ $i -lt 5 ]; do
+            MNT_TMP=$(awk -v p="$PART" '$1==p {print $2; exit}' /proc/mounts)
+            [ -z "$MNT_TMP" ] && break
+            umount "$MNT_TMP" 2>/dev/null || umount -l "$MNT_TMP" 2>/dev/null || true
+            sleep 1
+            i=$((i + 1))
+        done
+
         if mount | grep -q "$PART "; then
-            fatal "$STAGE7" "Раздел $PART снова занят после пересоздания USB.
+            fatal "$STAGE7" "Раздел $PART не удаётся освободить перед mkfs.
 Staging цел: $STAGE_DIR"
         fi
         echo -e "${CLR_GREEN}      $PART свободен после пересоздания${CLR_RESET}"
-    else
-        echo "      USB-порт не найден — пересоздание пропущено"
     fi
 
-    mkfs_success=0
+   mkfs_success=0
+	
     i=1
     while [ $i -le 3 ]; do
         if mkfs.ext4 -F -L extroot "$PART" >/dev/null 2>&1; then
@@ -1465,11 +1594,18 @@ Staging цел: $STAGE_DIR"
     echo -e "${CLR_GREEN}      отформатировано: $PART (ext4, label=extroot)${CLR_RESET}"
 fi
 
-echo "      монтирую $PART -> $MNT"
-mount "$PART" "$MNT"
-if [ $? -ne 0 ]; then
-    fatal "$STAGE7" "Не смог смонтировать $PART в $MNT.
+MNT_TMP=$(awk -v p="$PART" '$1==p {print $2; exit}' /proc/mounts)
+if [ -n "$MNT_TMP" ]; then
+    MNT="$MNT_TMP"
+    echo "      $PART уже примонтирован в $MNT"
+else
+    MNT=/mnt/extroot_tmp
+    mkdir -p "$MNT"
+    echo "      монтирую $PART -> $MNT"
+    if ! mount "$PART" "$MNT" 2>/dev/null; then
+        fatal "$STAGE7" "Не смог смонтировать $PART в $MNT.
 Staging цел: $STAGE_DIR"
+    fi
 fi
 
 if [ "$MODE" = noformat ]; then
@@ -1541,9 +1677,9 @@ BACKUP_ARCHIVE="$BACKUP_DIR/overlay_backup_${TS}.tar.gz"
 
 echo "      поднимаю шару для доступа к бэкапу..."
 share_up
-echo -e "      Доступ к бэкапу по локальной сети: "
-echo -e "      ${CLR_YELLOW}\\\\\\\\$(get_router_ip)\\overlaybackup${CLR_RESET}"
-echo -e "      user: 12345   password: 12345"
+echo -e "      ${CLR_GREEN}Доступ к бэкапу по локальной сети: "
+echo -e "      ${CLR_YELLOW}\\\\\\\\$(get_router_ip)\\overlaybackup"
+echo -e "      user: 12345   password: 12345${CLR_RESET}"
 echo
 
 echo "      удаляю whiteouts из staging..."
@@ -1693,7 +1829,8 @@ case "$R" in
         echo "Перезагружаюсь..."
         share_down
         sync
-        reboot
+		sleep 2
+        soft_reboot_with_fallback 40
         ;;
     *) echo "Ок, не перезагружаю." ;;
 esac
