@@ -1229,7 +1229,7 @@ fi
 
 sync
 sleep 1
-delay=40
+delay="40"
 
 setsid sh -c "
 	trap '' TERM
@@ -1795,7 +1795,7 @@ if ! mount | grep -q ' /rom/overlay ' && mount | grep -q ' /overlay '; then
 fi
 
 sync
-delay=40
+delay="40"
 setsid sh -c "
 	trap '' TERM
 	sleep $delay
