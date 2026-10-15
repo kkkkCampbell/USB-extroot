@@ -1,6 +1,6 @@
 #!/bin/sh
 # ============================================================
-#  usb-extroot.sh  v0.1.13
+#  usb-extroot.sh  v0.1.14
 #  Перенос overlay OpenWrt на USB-накопитель (extroot)
 #  Лог: /tmp/usb-extroot.log (сброс в overlay в конце)
 #  Бэкап: /tmp/.usb-extroot-x7k2m9q4p1w8/ (tmpfs, RAM)
@@ -38,7 +38,7 @@ case "$0" in
         ;;
 esac
 
-ver="v0.1.13"
+ver="v0.1.14"
 
 CLR_RESET="\033[0m"
 CLR_GREEN="\033[32m"
