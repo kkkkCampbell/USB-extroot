@@ -776,6 +776,23 @@ fi
 #  Пункт 4 меню проверит command -v second_drive_menu и
 #  вежливо сообщит "модуль не подключён".
 # ============================================================
+
+# ============================================================
+#  Подтягивание модулей (clone-overlay.sh, switch-overlay.sh).
+#
+#  Логика:
+#    1) пробуем скачать ОБА свежих с GitHub во временные .new
+#       (3 попытки на файл, пауза 1с между)
+#    2) если ОБА скачались и валидны:
+#         - заменяем ими рабочие копии в /tmp
+#         - подключаем
+#    3) если хотя бы один не скачался:
+#         - .new удаляем, ничего не заменяем
+#         - ищем доступные "старые" в /root, /, /tmp
+#         - подключаем то, что нашли (может быть частично)
+#
+#  Консистентность пары: либо оба новые, либо оба старые.
+# ============================================================
 SRC_BASE="https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/main"
 
 _dep_looks_valid() {
@@ -804,38 +821,82 @@ _dep_fetch() {
     return 0
 }
 
-_dep_load_one() {
-    local name="$1" marker="$2" src dst
+_dep_try_download() {
+    local name="$1" marker="$2" out="$3"
+    local url attempt
+    url="$SRC_BASE/$name"
+    attempt=0
+    rm -f "$out"
+    while [ "$attempt" -lt 3 ]; do
+        if _dep_fetch "$url" "$out" && _dep_looks_valid "$out" "$marker"; then
+            return 0
+        fi
+        attempt=$((attempt + 1))
+        sleep 1
+    done
+    rm -f "$out"
+    return 1
+}
 
-    if command -v "$marker" >/dev/null 2>&1; then
-        return 0
-    fi
-
+_dep_find_local() {
+    local name="$1" marker="$2" src
     for src in "/root/$name" "/$name" "/tmp/$name"; do
         if _dep_looks_valid "$src" "$marker"; then
-            . "$src"
+            echo "$src"
             return 0
         fi
     done
-
-    dst="/tmp/$name"
-    if _dep_fetch "$SRC_BASE/$name" "$dst" \
-       && _dep_looks_valid "$dst" "$marker"; then
-        . "$dst"
-        return 0
-    fi
-
-    rm -f "$dst" "$dst.part"
-    echo
-    echo -e "${CLR_ORANGE}Не удалось получить модуль: $name${CLR_RESET}"
-    echo "  Соответствующие функции будут недоступны."
     return 1
 }
 
 load_dependencies() {
-    _dep_load_one "clone-overlay.sh"  "clone_overlay_interactive"
-    _dep_load_one "switch-overlay.sh" "second_drive_menu"
+    local new_clone="/tmp/clone-overlay.sh.new"
+    local new_switch="/tmp/switch-overlay.sh.new"
+    local ok_clone=0 ok_switch=0
+    local local_clone local_switch
+
+    echo "      проверяю модули..."
+
+    _dep_try_download "clone-overlay.sh"  "clone_overlay_interactive" "$new_clone"  && ok_clone=1
+    _dep_try_download "switch-overlay.sh" "second_drive_menu"          "$new_switch" && ok_switch=1
+
+    if [ "$ok_clone" = "1" ] && [ "$ok_switch" = "1" ]; then
+        echo -e "${CLR_GREEN}      оба модуля получены с GitHub${CLR_RESET}"
+        mv -f "$new_clone"  "/tmp/clone-overlay.sh"
+        mv -f "$new_switch" "/tmp/switch-overlay.sh"
+        . /tmp/clone-overlay.sh
+        . /tmp/switch-overlay.sh
+        return 0
+    fi
+
+    rm -f "$new_clone" "$new_switch"
+    echo -e "${CLR_ORANGE}      не оба модуля доступны с GitHub, использую локальные${CLR_RESET}"
+
+    local_clone=$(_dep_find_local "clone-overlay.sh"  "clone_overlay_interactive")
+    local_switch=$(_dep_find_local "switch-overlay.sh" "second_drive_menu")
+
+    if [ -n "$local_clone" ]; then
+        . "$local_clone"
+        echo "      clone-overlay:  $local_clone"
+    else
+        echo -e "      clone-overlay:  ${CLR_ORANGE}не найден${CLR_RESET}"
+    fi
+
+    if [ -n "$local_switch" ]; then
+        . "$local_switch"
+        echo "      switch-overlay: $local_switch"
+    else
+        echo -e "      switch-overlay: ${CLR_ORANGE}не найден${CLR_RESET}"
+    fi
+
+    if [ -z "$local_clone" ] || [ -z "$local_switch" ]; then
+        echo
+        echo -e "${CLR_ORANGE}Модули недоступны частично или полностью.${CLR_RESET}"
+        echo "  Пункт 4 меню может не работать."
+    fi
+    return 0
 }
+
 
 load_dependencies
 
