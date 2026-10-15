@@ -189,7 +189,6 @@ sed -i '/^12345:/d' /etc/passwd
 sed -i '/^\/root\/reboot_after\.sh$/d' /etc/rc.local 2>/dev/null || true
 
 mkdir -p /overlay
-sleep 1
 sync
 
 sleep "$WAIT_BEFORE_REBOOT"
@@ -200,8 +199,12 @@ if ! mount | grep -q ' /rom/overlay ' && mount | grep -q ' /overlay '; then
     exit 0
 fi
 
+mkdir -p /overlay
+sleep 1
 sync
-delay=40
+
+sync
+delay="40"
 setsid sh -c "
 	trap '' TERM
 	sleep $delay
