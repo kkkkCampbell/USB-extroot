@@ -88,7 +88,6 @@ switch_overlay_scan_targets() {
     return 0
 }
 
-
 # ------------------------------------------------------------
 #  Выбор цели. Заполняет SWITCH_DST_DEV.
 # ------------------------------------------------------------
@@ -110,7 +109,7 @@ switch_overlay_choose_target() {
         n=$((n + 1))
         echo -e "${CLR_GREEN}  $n) $desc${CLR_RESET}"
     done < "$list"
-	echo
+    echo
     printf "Выберите (1-%d, 0 — отмена): " "$n"
     read i
 
@@ -140,12 +139,16 @@ switch_overlay_choose_target() {
 
 # ------------------------------------------------------------
 #  Записать новый UUID в fstab UBI rootfs_data и в fstab цели.
+#  Для __internal__ — снять extroot из UBI и положить хелпер.
 # ------------------------------------------------------------
 switch_overlay_apply() {
     local uuid ubi_dev ubi_rc ubi_mnt dst_mp dst_was_mounted
 
-    # Спец-случай: возврат на внутренний NAND.
-    # Это не смена UUID, а удаление extroot из fstab UBI.
+    # ============================================================
+    #  Спец-случай: возврат на внутренний NAND.
+    #  Это не смена UUID, а удаление extroot из fstab UBI.
+    #  Плюс — кладём reboot_after.sh и подцепляем его в rc.local.
+    # ============================================================
     if [ "$SWITCH_DST_DEV" = "__internal__" ]; then
         ubi_dev=$(find_internal_overlay_dev)
         ubi_rc=$?
@@ -170,6 +173,58 @@ switch_overlay_apply() {
             return 1
         fi
 
+        mkdir -p "$ubi_mnt/upper/root"
+
+        cat > "$ubi_mnt/upper/root/reboot_after.sh" <<'EOF'
+#!/bin/sh
+# SWITCH-TO-INTERNAL
+WAIT_BEFORE_REBOOT=100
+
+rm -f /root/reboot_after.sh
+uci -q delete ksmbd.overlaybackup
+uci -q commit ksmbd
+if command -v ksmbd.useradmin >/dev/null 2>&1; then
+    ksmbd.useradmin -d 12345 >/dev/null 2>&1
+fi
+sed -i '/^12345:/d' /etc/passwd
+[ -f /etc/shadow ] && sed -i '/^12345:/d' /etc/shadow
+sed -i '/^\/root\/reboot_after\.sh$/d' /etc/rc.local 2>/dev/null || true
+
+mkdir -p /overlay
+sleep 1
+sync
+
+sleep "$WAIT_BEFORE_REBOOT"
+
+if ! mount | grep -q ' /rom/overlay ' && mount | grep -q ' /overlay '; then
+    rm -f /flagfile
+    /etc/init.d/ac_recovery.sh stop
+    exit 0
+fi
+
+sync
+delay=40
+setsid sh -c "
+	trap '' TERM
+	sleep $delay
+	echo b > /proc/sysrq-trigger
+	#reboot -f
+" &
+sleep 1
+reboot
+EOF
+        chmod +x "$ubi_mnt/upper/root/reboot_after.sh"
+
+        if [ ! -f "$ubi_mnt/upper/etc/rc.local" ]; then
+            printf '#!/bin/sh\n# Put your custom commands here that should be executed once\n# the system init finished. By default this file does nothing.\n\nexit 0\n' > "$ubi_mnt/upper/etc/rc.local"
+        fi
+        if ! grep -q '^/root/reboot_after.sh$' "$ubi_mnt/upper/etc/rc.local"; then
+            sed -i '/^exit 0/i /root/reboot_after.sh' "$ubi_mnt/upper/etc/rc.local"
+        fi
+        chmod +x "$ubi_mnt/upper/etc/rc.local"
+        sync
+        sleep 2
+
         uci -c "$ubi_mnt/upper/etc/config" -q delete fstab.extroot
         uci -c "$ubi_mnt/upper/etc/config" -q delete fstab.rwm
         uci -c "$ubi_mnt/upper/etc/config" commit fstab 2>/dev/null || true
@@ -180,6 +235,9 @@ switch_overlay_apply() {
         return 0
     fi
 
+    # ============================================================
+    #  Обычный случай: смена загрузочного UUID в UBI + fstab цели.
+    # ============================================================
     uuid=$(block info "$SWITCH_DST_DEV" 2>/dev/null \
            | grep -o 'UUID="[^"]*"' | cut -d'"' -f2)
     if [ -z "$uuid" ]; then
@@ -211,8 +269,7 @@ switch_overlay_apply() {
         return 1
     fi
 
-    uci -c "$ubi_mnt/upper/etc/config" -q set fstab.extroot.uuid="$uuid"
-	uci -c "$ubi_mnt/upper/etc/config" -q delete fstab.extroot
+    uci -c "$ubi_mnt/upper/etc/config" -q delete fstab.extroot
     uci -c "$ubi_mnt/upper/etc/config" set fstab.extroot=mount
     uci -c "$ubi_mnt/upper/etc/config" set fstab.extroot.uuid="$uuid"
     uci -c "$ubi_mnt/upper/etc/config" set fstab.extroot.target="/overlay"
@@ -220,7 +277,7 @@ switch_overlay_apply() {
     uci -c "$ubi_mnt/upper/etc/config" -q delete fstab.rwm
     uci -c "$ubi_mnt/upper/etc/config" commit fstab 2>/dev/null || true
     sync
-	sleep 2
+    sleep 2
     umount "$ubi_mnt" 2>/dev/null || true
     rmdir "$ubi_mnt" 2>/dev/null || true
 
@@ -257,7 +314,6 @@ switch_overlay_apply() {
 
     return 0
 }
-
 
 # ------------------------------------------------------------
 #  Применить смену + предложить ребут.
@@ -302,11 +358,9 @@ switch_overlay_after_clone() {
     return 0
 }
 
-
 # ------------------------------------------------------------
 #  Интерактив: сменить загрузочный накопитель.
 # ------------------------------------------------------------
-
 switch_overlay_interactive() {
     echo
     echo "============================================================"
@@ -349,7 +403,6 @@ switch_overlay_interactive() {
 
 # ------------------------------------------------------------
 #  Подменю «Второй накопитель».
-#  Если целей с оверлеем нет — сразу копирование.
 # ------------------------------------------------------------
 second_drive_menu() {
     local cur_desc
