@@ -176,7 +176,7 @@ switch_overlay_apply() {
         cat > "$ubi_mnt/upper/root/reboot_after.sh" <<'EOF'
 #!/bin/sh
 # SWITCH-TO-INTERNAL
-WAIT_BEFORE_REBOOT=100
+WAIT_BEFORE_REBOOT=10
 
 rm -f /root/reboot_after.sh
 uci -q delete ksmbd.overlaybackup
@@ -189,6 +189,7 @@ sed -i '/^12345:/d' /etc/passwd
 sed -i '/^\/root\/reboot_after\.sh$/d' /etc/rc.local 2>/dev/null || true
 
 mkdir -p /overlay
+sleep 1
 sync
 
 sleep "$WAIT_BEFORE_REBOOT"
@@ -199,17 +200,13 @@ if ! mount | grep -q ' /rom/overlay ' && mount | grep -q ' /overlay '; then
     exit 0
 fi
 
-mkdir -p /overlay
-sleep 1
-sync
-
 sync
 delay="40"
 setsid sh -c "
 	trap '' TERM
 	sleep $delay
 	echo b > /proc/sysrq-trigger
-	#reboot -f
+	reboot -f
 " &
 sleep 1
 reboot
@@ -245,7 +242,47 @@ EOF
         return 1
     fi
 
-    # --- 1. UBI rootfs_data ---
+    # --- 1. Сначала подготавливаем ЦЕЛЕВОЙ носитель ---
+    # Если что-то на этом этапе падает, UBI остаётся нетронутым,
+    # система продолжит грузиться с текущего накопителя.
+    dst_mp=$(awk -v d="$SWITCH_DST_DEV" '$1==d {print $2; exit}' /proc/mounts)
+    dst_was_mounted=0
+    if [ -n "$dst_mp" ]; then
+        dst_was_mounted=1
+    else
+        dst_mp=/mnt/switch_dst
+        mkdir -p "$dst_mp" || return 1
+        if ! mount "$SWITCH_DST_DEV" "$dst_mp" 2>/dev/null; then
+            echo -e "${CLR_ORANGE}Не смог примонтировать цель.${CLR_RESET}"
+            rmdir "$dst_mp" 2>/dev/null || true
+            return 1
+        fi
+    fi
+
+    if [ ! -d "$dst_mp/upper/etc/config" ]; then
+        if [ "$dst_was_mounted" = "0" ]; then
+            umount "$dst_mp" 2>/dev/null || true
+            rmdir "$dst_mp" 2>/dev/null || true
+        fi
+        echo -e "${CLR_ORANGE}В $SWITCH_DST_DEV нет upper/etc/config.${CLR_RESET}"
+        return 1
+    fi
+
+    uci -c "$dst_mp/upper/etc/config" -q delete fstab.extroot
+    uci -c "$dst_mp/upper/etc/config" set fstab.extroot=mount
+    uci -c "$dst_mp/upper/etc/config" set fstab.extroot.uuid="$uuid"
+    uci -c "$dst_mp/upper/etc/config" set fstab.extroot.target="/overlay"
+    uci -c "$dst_mp/upper/etc/config" set fstab.extroot.enabled="1"
+    uci -c "$dst_mp/upper/etc/config" -q delete fstab.rwm
+    uci -c "$dst_mp/upper/etc/config" commit fstab 2>/dev/null || true
+    sync
+
+    if [ "$dst_was_mounted" = "0" ]; then
+        umount "$dst_mp" 2>/dev/null || true
+        rmdir "$dst_mp" 2>/dev/null || true
+    fi
+
+    # --- 2. Только теперь — UBI rootfs_data ---
     ubi_dev=$(find_internal_overlay_dev)
     ubi_rc=$?
     case "$ubi_rc" in
@@ -269,7 +306,6 @@ EOF
         return 1
     fi
 
-
     uci -c "$ubi_mnt/upper/etc/config" set fstab.extroot=mount
     uci -c "$ubi_mnt/upper/etc/config" set fstab.extroot.uuid="$uuid"
     uci -c "$ubi_mnt/upper/etc/config" set fstab.extroot.target="/overlay"
@@ -277,40 +313,9 @@ EOF
     uci -c "$ubi_mnt/upper/etc/config" -q delete fstab.rwm
     uci -c "$ubi_mnt/upper/etc/config" commit fstab 2>/dev/null || true
     sync
-	sleep 2
+    sleep 2
     umount "$ubi_mnt" 2>/dev/null || true
     rmdir "$ubi_mnt" 2>/dev/null || true
-
-    # --- 2. fstab на самом целевом носителе ---
-    dst_mp=$(awk -v d="$SWITCH_DST_DEV" '$1==d {print $2; exit}' /proc/mounts)
-    dst_was_mounted=0
-    if [ -n "$dst_mp" ]; then
-        dst_was_mounted=1
-    else
-        dst_mp=/mnt/switch_dst
-        mkdir -p "$dst_mp" || return 1
-        if ! mount "$SWITCH_DST_DEV" "$dst_mp" 2>/dev/null; then
-            echo -e "${CLR_ORANGE}Не смог примонтировать цель.${CLR_RESET}"
-            rmdir "$dst_mp" 2>/dev/null || true
-            return 1
-        fi
-    fi
-
-    if [ -d "$dst_mp/upper/etc/config" ]; then
-        uci -c "$dst_mp/upper/etc/config" -q delete fstab.extroot
-        uci -c "$dst_mp/upper/etc/config" set fstab.extroot=mount
-        uci -c "$dst_mp/upper/etc/config" set fstab.extroot.uuid="$uuid"
-        uci -c "$dst_mp/upper/etc/config" set fstab.extroot.target="/overlay"
-        uci -c "$dst_mp/upper/etc/config" set fstab.extroot.enabled="1"
-        uci -c "$dst_mp/upper/etc/config" -q delete fstab.rwm
-        uci -c "$dst_mp/upper/etc/config" commit fstab 2>/dev/null || true
-        sync
-    fi
-
-    if [ "$dst_was_mounted" = "0" ]; then
-        umount "$dst_mp" 2>/dev/null || true
-        rmdir "$dst_mp" 2>/dev/null || true
-    fi
 
     return 0
 }
@@ -350,7 +355,7 @@ switch_overlay_after_clone() {
         y|Y|yes|YES)
             sync
             sleep 2
-            reboot
+            soft_reboot_with_fallback 40
             ;;
         *)
             echo "Ок, перезагрузи вручную."
