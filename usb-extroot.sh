@@ -1200,7 +1200,7 @@ $UBI_DEV
 
     mkdir -p "$UBI_MNT/upper/root"
 
-    cat > "$UBI_MNT/upper/root/reboot_after.sh" <<EOF
+    cat > "$UBI_MNT/upper/root/reboot_after.sh" <<'EOF'
 #!/bin/sh
 # RESTORE
 WAIT_BEFORE_REBOOT=100
