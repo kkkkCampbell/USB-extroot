@@ -1,6 +1,6 @@
 #!/bin/sh
 # ============================================================
-#  usb-extroot.sh  v0.1.15
+#  usb-extroot.sh  v0.1.16
 #  Перенос overlay OpenWrt на USB-накопитель (extroot)
 #  Лог: /tmp/usb-extroot.log (сброс в overlay в конце)
 #  Бэкап: /tmp/.usb-extroot-x7k2m9q4p1w8/ (tmpfs, RAM)
@@ -39,7 +39,7 @@ case "$0" in
         ;;
 esac
 
-ver="v0.1.15"
+ver="v0.1.16"
 
 CLR_RESET="\033[0m"
 CLR_GREEN="\033[32m"
@@ -179,7 +179,7 @@ pkg_repair_finish() {
     PKG_REPAIR_ACTIVE=0
 }
 
-# ============================================================
+# =================================================================================
 #  Мягкий ребут с fallback на жёсткий.
 #
 #  Логика:
@@ -188,11 +188,11 @@ pkg_repair_finish() {
 #    2. В основном процессе делаем мягкий `reboot`:
 #       - если он сработает — система уходит, сторож умирает вместе с ней;
 #       - если залипнет после SIGTERM и до SIGKILL — сторож выживет,
-#         доспит и дёрнет `reboot -f`.
+#         доспит и дёрнет `echo b > /proc/sysrq-trigger`, или reboot -f.
 #    3. Через $delay секунд сторож делает `reboot -f`.
 #
 #  $1 — таймаут в секундах (по умолчанию 40).
-# ============================================================
+# ==================================================================================
 soft_reboot_with_fallback() {
     local delay="${1:-40}"
 
@@ -200,12 +200,64 @@ soft_reboot_with_fallback() {
         trap '' TERM
         sleep $delay
         echo b > /proc/sysrq-trigger
-		#reboot -f
+		sleep 1
+		reboot -f
     " &
 
     sleep 1
     reboot
 }
+
+# ============================================================
+#  Ребут с 10-секундным окном отмены.
+#  Любая клавиша — отмена → предупреждение → exit 1.
+#  Иначе: мягкий ребут с fallback.
+#
+#  $1 — "1" если перед ребутом нужно снять шару, иначе "0".
+# ============================================================
+confirm_reboot_or_die() {
+    local need_share_down="${1:-0}"
+    local cancel=0 i
+
+    echo
+    echo -e "${CLR_ORANGE}!!! ПЕРЕЗАГРУЗКА ЧЕРЕЗ 10 СЕКУНД !!!${CLR_RESET}"
+    echo "    Любая клавиша — отмена."
+
+    i=10
+    while [ $i -gt 0 ]; do
+        printf "\r    осталось: %2d " "$i"
+        if read -t 1 -n 1 _ 2>/dev/null; then
+            cancel=1
+            break
+        fi
+        i=$((i-1))
+    done
+    printf "\r    осталось:  0 \n"
+
+    if [ "$cancel" = "1" ]; then
+        echo
+        echo -e "${CLR_ORANGE}############################################################${CLR_RESET}"
+        echo -e "${CLR_ORANGE}#  ПЕРЕЗАГРУЗКА НЕ ВЫПОЛНЕНА${CLR_RESET}"
+        echo -e "${CLR_ORANGE}############################################################${CLR_RESET}"
+        echo
+        echo "Система в неопределённом состоянии!"
+        echo
+        echo "НИЧЕГО НЕ ТРОГАЙ и не запускай скрипт повторно,"
+        echo "пока не перезагрузишь роутер командой:"
+        echo
+        echo -e "    ${CLR_YELLOW}reboot${CLR_RESET}"
+        echo
+        exit 1
+    fi
+
+    [ "$need_share_down" = "1" ] && share_down
+
+    echo "Перезагружаюсь..."
+    sync
+    sleep 2
+    soft_reboot_with_fallback 40
+}
+
 die() {
     pkg_repair_finish
     echo
@@ -230,7 +282,7 @@ fatal() {
     echo
     echo "$2"
     echo
-	cp /tmp/usb-extroot.log "${BACKUP_DIR:-/tmp/.usb-extroot-x7k2m9q4p1w8}/" 2>/dev/null || true
+    cp /tmp/usb-extroot.log "${BACKUP_DIR:-/tmp/.usb-extroot-x7k2m9q4p1w8}/" 2>/dev/null || true
     shout_fatal
     exit 1
 }
@@ -591,7 +643,7 @@ install_pkgs() {
 #  $1 — набор: base | ext4
 # ------------------------------------------------------------
 deps_ensure() {
-    local set="$1"
+    local set="$1" mode="${2:-install}"
     local cmds fs_list missing still entry cmd pkg fs found_net
 
     case "$set" in
@@ -633,7 +685,6 @@ deps_ensure() {
         fi
     done
 
-    # Спец-проверки только для base
     if [ "$set" = "base" ]; then
         if ! find_gnu_tar >/dev/null 2>&1; then
             case " $missing " in
@@ -656,6 +707,12 @@ deps_ensure() {
         return 0
     fi
 
+    if [ "$mode" = "check" ]; then
+        echo -e "      ${CLR_ORANGE}не хватает: $missing${CLR_RESET}"
+        echo -e "      ${CLR_YELLOW}будет установлено после подтверждения${CLR_RESET}"
+        return 1
+    fi
+
     echo -e "      ${CLR_ORANGE}отсутствуют: $missing${CLR_RESET}"
 
     if [ "$PM" = "none" ]; then
@@ -676,7 +733,6 @@ deps_ensure() {
     echo "      восстанавливаю сеть..."
     pkg_repair_finish
 
-    # Повторная проверка — то, что реально встало
     still=""
     for entry in $cmds; do
         cmd="${entry%%:*}"
@@ -696,13 +752,18 @@ deps_ensure() {
 }
 
 stage0_deps() {
+    local mode="${1:-install}"
+
     echo
     STAGE0="[0/9] зависимости"
     echo "$STAGE0 ..."
     PM=$(detect_pm)
     echo "      менеджер пакетов: $PM"
 
-    if ! deps_ensure base; then
+    if ! deps_ensure base "$mode"; then
+        if [ "$mode" = "check" ]; then
+            return 0
+        fi
         die "$STAGE0" "Базовые зависимости не установлены.
 
 Проверь вручную:
@@ -714,6 +775,9 @@ stage0_deps() {
 
     TARBIN=$(find_gnu_tar)
     if [ -z "$TARBIN" ]; then
+        if [ "$mode" = "check" ]; then
+            return 0
+        fi
         die "$STAGE0" "GNU tar не найден.
 
   command -v tar  -> $(command -v tar 2>/dev/null || echo 'нет')
@@ -915,9 +979,9 @@ _dep_fetch() {
     rm -f "$tmp"
 
     if have wget; then
-        wget -qO "$tmp" "$url" 2>/dev/null || { rm -f "$tmp"; return 1; }
+        wget --timeout=3 -qO "$tmp" "$url" 2>/dev/null || { rm -f "$tmp"; return 1; }
     elif have curl; then
-        curl -fsSL "$url" -o "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
+        curl -fsSL --connect-timeout 3 "$url" -o "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
     else
         return 1
     fi
@@ -1055,7 +1119,7 @@ BANNER
     echo -e "  3) Восстановить загрузку с внутренней памяти роутера"
 	echo -e "  4) Выбор загрузочного устройства, клонирование накопителя"
     echo -e "  0) Выход"
-    printf "Выбор: "
+    printf "${CLR_YELLOW}Выбор: ${CLR_RESET}"
     read CHOICE
 
     case "$CHOICE" in
@@ -1072,7 +1136,7 @@ BANNER
             fi
             continue
             ;;
-        0|"") echo "Выход."; exit 0 ;;
+        0) echo "Выход."; exit 0 ;;
         *)
             echo
             echo "Неизвестный выбор: '$CHOICE'"
@@ -1203,8 +1267,7 @@ $UBI_DEV
     cat > "$UBI_MNT/upper/root/reboot_after.sh" <<'EOF'
 #!/bin/sh
 # RESTORE
-WAIT_BEFORE_REBOOT=100
-
+WAIT_BEFORE_REBOOT=10
 rm -f /root/reboot_after.sh
 uci -q delete ksmbd.overlaybackup
 uci -q commit ksmbd
@@ -1214,13 +1277,10 @@ fi
 sed -i '/^12345:/d' /etc/passwd
 [ -f /etc/shadow ] && sed -i '/^12345:/d' /etc/shadow
 sed -i '/^\/root\/reboot_after\.sh$/d' /etc/rc.local 2>/dev/null || true
-
 mkdir -p /overlay
 sleep 1
 sync
-
 sleep "$WAIT_BEFORE_REBOOT"
-
 if ! mount | grep -q ' /rom/overlay ' && mount | grep -q ' /overlay '; then
 	rm -f /flagfile
 	/etc/init.d/ac_recovery.sh stop
@@ -1228,14 +1288,14 @@ if ! mount | grep -q ' /rom/overlay ' && mount | grep -q ' /overlay '; then
 fi
 
 sync
-sleep 1
 delay="40"
 
 setsid sh -c "
 	trap '' TERM
 	sleep $delay
 	echo b > /proc/sysrq-trigger
-	#reboot -f
+	sleep 1
+	reboot -f
 " &
 
 sleep 1
@@ -1252,30 +1312,24 @@ EOF
         sed -i '/^exit 0/i /root/reboot_after.sh' "$UBI_MNT/upper/etc/rc.local"
     fi
     chmod +x "$UBI_MNT/upper/etc/rc.local"
-
     sync
-	sleep 1
-	cp /tmp/usb-extroot.log "$UBI_MNT/upper/root/usb-extroot.log" 2>/dev/null || true
+	sleep 3
+
+    cp /tmp/usb-extroot.log "$UBI_MNT/upper/root/usb-extroot.log" 2>/dev/null || true
+    mkdir -p "$UBI_MNT/overlay"
+    [ -e "$UBI_MNT/upper/overlay" ] && [ ! -d "$UBI_MNT/upper/overlay" ] && rm -f "$UBI_MNT/upper/overlay"
+    mkdir -p "$UBI_MNT/upper/overlay"
+    sync
+	sleep 3
+
     umount "$UBI_MNT" 2>/dev/null || true
     echo "      reboot_after.sh + rc.local в $UBI_DEV подготовлены."
     rmdir "$UBI_MNT" 2>/dev/null || true
 
     echo
     echo -e "${CLR_GREEN}Готово. Ребут для применения.${CLR_RESET}"
-    printf "Перезагрузить сейчас? (y/N): "
-    read R
-    case "$R" in
-        y|Y|yes|YES)
-            echo "Перезагружаюсь..."
-            sync
-			sleep 2
-            soft_reboot_with_fallback 40
-            ;;
-        *)
-            echo "Ок, перезагрузи вручную."
-            exit 0
-            ;;
-    esac
+
+    confirm_reboot_or_die 0
     exit 0
 fi
 
@@ -1328,7 +1382,7 @@ fi
 #  после финального выбора $PART.
 # ============================================================
 fix_uboot_env
-stage0_deps
+stage0_deps check
 stage1_overlay
 
 if ! stage2_find_usb; then
@@ -1392,7 +1446,25 @@ echo
 STAGE5="[5/9] пакеты"
 echo "$STAGE5 ..."
 
-if ! deps_ensure ext4; then
+if ! deps_ensure base install; then
+    die "$STAGE5" "Базовые зависимости не установлены.
+
+Проверь вручную:
+  $PM update
+  $PM add <пакеты из сообщения выше>"
+fi
+
+TARBIN=$(find_gnu_tar)
+if [ -z "$TARBIN" ]; then
+    die "$STAGE5" "GNU tar не найден.
+
+  command -v tar  -> $(command -v tar 2>/dev/null || echo 'нет')
+  tar --version    -> $(tar --version 2>&1 | head -1)
+
+Поставь GNU tar и запусти скрипт заново."
+fi
+
+if ! deps_ensure ext4 install; then
     die "$STAGE5" "Не удалось подготовить пакеты для работы с ext4.
 
 Проверь вручную:
@@ -1400,7 +1472,7 @@ if ! deps_ensure ext4; then
   $PM add kmod-fs-ext4 e2fsprogs"
 fi
 
-echo -e "${CLR_GREEN}      пакеты для ext4 на месте${CLR_RESET}"
+echo -e "${CLR_GREEN}      пакеты на месте${CLR_RESET}"
 
 # ============================================================
 #  ШАГ 6. Staging
@@ -1583,8 +1655,8 @@ Staging цел: $STAGE_DIR"
         echo -e "${CLR_GREEN}      $PART свободен после пересоздания${CLR_RESET}"
     fi
 
-   mkfs_success=0
-	
+    mkfs_success=0
+
     i=1
     while [ $i -le 3 ]; do
         if mkfs.ext4 -F -L extroot "$PART" >/dev/null 2>&1; then
@@ -1770,7 +1842,7 @@ cp /tmp/usb-extroot.log "$MNT/upper/root/usb-extroot.log" 2>/dev/null || true
 cat > "$REBOOT_HELPER" <<'EOF'
 #!/bin/sh
 # MAIN
-WAIT_BEFORE_REBOOT=100
+WAIT_BEFORE_REBOOT=10
 
 rm -f /root/reboot_after.sh
 uci -q delete ksmbd.overlaybackup
@@ -1800,7 +1872,8 @@ setsid sh -c "
 	trap '' TERM
 	sleep $delay
 	echo b > /proc/sysrq-trigger
-	#reboot -f
+	sleep 1
+	reboot -f
 " &
 sleep 1
 reboot
@@ -1816,7 +1889,7 @@ if ! grep -q '^/root/reboot_after.sh$' "$MNT/upper/etc/rc.local"; then
 fi
 chmod +x "$MNT/upper/etc/rc.local"
 sync
-
+sleep 3
 umount "$MNT" 2>/dev/null || true
 rm -rf "$STAGE_DIR" 2>/dev/null || true
 
@@ -1825,29 +1898,6 @@ echo -e "${CLR_GREEN}===========================================================
 echo -e "${CLR_GREEN} Готово. Бэкап: $BACKUP_ARCHIVE${CLR_RESET}"
 echo -e "${CLR_YELLOW}    Доступ к бэкапу по локальной сети: \\\\\\\\$(get_router_ip)\\overlaybackup${CLR_RESET}"
 echo -e "${CLR_YELLOW}    user: 12345   password: 12345${CLR_RESET}"
-echo
-echo "    1) перезагрузить сейчас"
-echo "    2) выйти без перезагрузки"
 echo -e "${CLR_GREEN}================================================================${CLR_RESET}"
-printf "Выбор: "
-read R
-case "$R" in
-    1)
-        echo
-        echo -e "${CLR_ORANGE}!!! ПЕРЕЗАГРУЗКА ЧЕРЕЗ 10 СЕКУНД !!!${CLR_RESET}"
-        echo "    Ctrl+C — отмена."
-        i=10
-        while [ $i -gt 0 ]; do
-            printf "\r    осталось: %2d " "$i"
-            sleep 1
-            i=$((i-1))
-        done
-        printf "\r    осталось:  0 \n"
-        echo "Перезагружаюсь..."
-        share_down
-        sync
-		sleep 2
-        soft_reboot_with_fallback 40
-        ;;
-    *) echo "Ок, не перезагружаю." ;;
-esac
+
+confirm_reboot_or_die 1
