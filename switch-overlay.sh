@@ -176,7 +176,7 @@ switch_overlay_apply() {
         cat > "$ubi_mnt/upper/root/reboot_after.sh" <<'EOF'
 #!/bin/sh
 # SWITCH-TO-INTERNAL
-WAIT_BEFORE_REBOOT=20
+WAIT_BEFORE_REBOOT=0
 
 rm -f /root/reboot_after.sh
 uci -q delete ksmbd.overlaybackup
@@ -349,8 +349,9 @@ switch_overlay_after_clone() {
     echo -e "${CLR_GREEN}Готово.${CLR_RESET}"
     echo "  После перезагрузки система поднимется с $SWITCH_DST_DEV."
     echo
-    printf "Перезагрузить сейчас? (y/N): "
-    read a
+    #printf "Перезагрузить сейчас? (y/N): "
+    #read a
+	a=y
     case "$a" in
         y|Y|yes|YES)
             sync
