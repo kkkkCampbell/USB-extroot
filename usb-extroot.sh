@@ -1106,6 +1106,7 @@ mount_removable_all() {
         echo "      (съёмных накопителей не обнаружено)"
         echo "        /dev:"
         listed=0
+		flash="no"
         for d in /dev/sd? /dev/mmcblk?; do
             [ -b "$d" ] || continue
             b=$(basename "$d")
@@ -1138,7 +1139,13 @@ deps_ensure "removable" install
 echo
 echo "Монтирую съёмные накопители..."
 mount_removable_all
-
+echo "$flash"
+if [ "$flash" = "no" ]; then
+	echo -e "${CLR_ORANGE}НАКОПИТЕЛИ НЕ ОБНАРУЖЕНЫ!"
+	echo -e "ПОДКЛЮЧИТЕ ФЛЭШКУ И ПЕРЕЗАПУСТИТЕ СКРИПТ${CLR_RESET}"
+fi
+sleep 3
+exit
 # ============================================================
 #  МЕНЮ
 # ============================================================
