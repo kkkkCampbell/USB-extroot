@@ -1,6 +1,6 @@
 #!/bin/sh
 # ============================================================
-#  usb-extroot.sh  v0.1.17
+#  usb-extroot.sh  v0.1.16
 #  Перенос overlay OpenWrt на USB-накопитель (extroot)
 #  Лог: /tmp/usb-extroot.log (сброс в overlay в конце)
 #  Бэкап: /tmp/.usb-extroot-x7k2m9q4p1w8/ (tmpfs, RAM)
@@ -24,7 +24,7 @@
 #  пайпа, что и раньше.
 # ------------------------------------------------------------
 path="/opt/usb-extroot"
-TEST_MODE=0
+TEST_MODE=1
 
 case "$0" in
     /tmp/*|/dev/shm/*|/run/*) ;;
@@ -39,7 +39,7 @@ case "$0" in
         ;;
 esac
 
-ver="v0.1.17"
+ver="v0.1.16"
 
 CLR_RESET="\033[0m"
 CLR_GREEN="\033[32m"
@@ -866,7 +866,7 @@ stage2_find_usb() {
         echo -e "  ${CLR_YELLOW}$n -> ${CLR_GREEN}$(describe $d)  ${CLR_RESET}"
     done
     echo
-    printf "${CLR_RESET}Укажите целевой (введите число слева, 0 — отмена): "
+    printf "${CLR_RESET}Укажите целевой накопитель (введите число слева, 0 — отмена): "
     read CHOSEN
 
     case "$CHOSEN" in
@@ -1499,12 +1499,36 @@ else
     echo -e "${CLR_YELLOW}остальные данные не тронуты. Затем будет развёрнут overlay.${CLR_RESET}"
 fi
 
-printf "Для подтверждения введите YES: "
+CONFIRM_CODE=$(tr -dc '0-9' < /dev/urandom 2>/dev/null | head -c 4)
+
+echo
+echo -e "${CLR_ORANGE}############################################################${CLR_RESET}"
+echo -e "${CLR_ORANGE}#  ВНИМАНИЕ: НЕОБРАТИМАЯ ОПЕРАЦИЯ${CLR_RESET}"
+echo -e "${CLR_ORANGE}############################################################${CLR_RESET}"
+echo
+echo "Сейчас будет уничтожен накопитель:"
+echo -e "    ${CLR_YELLOW}$DESC${CLR_RESET}"
+echo -e "    раздел: ${CLR_YELLOW}$PART${CLR_RESET}"
+echo
+if [ "$MODE" = format ]; then
+    echo "Действие: mkfs.ext4 -F $PART"
+else
+    echo "Действие: удаление overlay-структуры на $PART (upper/, work/, .fs_state)"
+fi
+echo
+echo - e "Для подтверждения ${CLR_ORANGE}УНИЧТОЖЕНИЯ ДАННЫХ НА НАКОПИТЕЛЕ${CLR_RESET} введите число::"
+echo
+echo -e "        ${CLR_YELLOW}${CONFIRM_CODE}${CLR_RESET}"
+echo
+printf "Число (Enter — отмена): "
 read A
-if [ "$A" != "YES" ]; then
+
+if [ "$A" != "$CONFIRM_CODE" ]; then
+    echo
     echo "Отменено."
     exit 0
 fi
+
 echo -e "Подтверждено: ${CLR_YELLOW}$TARGET ($MODE)${CLR_RESET}."
 
 # ============================================================
