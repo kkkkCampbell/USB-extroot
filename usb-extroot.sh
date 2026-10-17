@@ -1,6 +1,6 @@
 #!/bin/sh
 # ============================================================
-#  usb-extroot.sh  v0.1.16
+#  usb-extroot.sh  v0.1.17
 #  Перенос overlay OpenWrt на USB-накопитель (extroot)
 #  Лог: /tmp/usb-extroot.log (сброс в overlay в конце)
 #  Бэкап: /tmp/.usb-extroot-x7k2m9q4p1w8/ (tmpfs, RAM)
@@ -39,7 +39,7 @@ case "$0" in
         ;;
 esac
 
-ver="v0.1.16"
+ver="v0.1.17"
 
 CLR_RESET="\033[0m"
 CLR_GREEN="\033[32m"
@@ -641,6 +641,7 @@ install_pkgs() {
 # ------------------------------------------------------------
 #  Проверить и, при необходимости, доустановить зависимости.
 #  $1 — набор: base | ext4
+#  $2 — режим: install (по умолчанию) | check
 # ------------------------------------------------------------
 deps_ensure() {
     local set="$1" mode="${2:-install}"
@@ -858,33 +859,36 @@ stage2_find_usb() {
     USB_PRESENT=1
     set -- $DISKS
 
-    if [ $# -eq 1 ]; then
-        TARGET="$1"
-    else
-        echo "Найдено несколько внешних накопителей:"
-        n=0
-        for d in $DISKS; do
-            n=$((n + 100))
-            echo -e "  ${CLR_YELLOW}$n -> ${CLR_GREEN}$(describe $d)  ${CLR_RESET}"
-        done
-        echo
-        printf "${CLR_RESET}Укажите целевой (введите число слева): "
-        read CHOSEN
+    echo "Найдены внешние накопители:"
+    n=0
+    for d in $DISKS; do
+        n=$((n + 100))
+        echo -e "  ${CLR_YELLOW}$n -> ${CLR_GREEN}$(describe $d)  ${CLR_RESET}"
+    done
+    echo
+    printf "${CLR_RESET}Укажите целевой (введите число слева, 0 — отмена): "
+    read CHOSEN
 
-        ok=0
-        n=0
-        for d in $DISKS; do
-            n=$((n + 100))
-            if [ "$n" = "$CHOSEN" ]; then
-                TARGET="$d"
-                ok=1
-                break
-            fi
-        done
+    case "$CHOSEN" in
+        0|"")
+            echo "Отменено."
+            exit 0
+            ;;
+    esac
 
-        if [ "$ok" != "1" ]; then
-            die "$STAGE2" "Выбран несуществующий номер: $CHOSEN"
+    ok=0
+    n=0
+    for d in $DISKS; do
+        n=$((n + 100))
+        if [ "$n" = "$CHOSEN" ]; then
+            TARGET="$d"
+            ok=1
+            break
         fi
+    done
+
+    if [ "$ok" != "1" ]; then
+        die "$STAGE2" "Выбран несуществующий номер: $CHOSEN"
     fi
 
     DESC=$(describe "$TARGET")
@@ -945,6 +949,17 @@ EXTROOT_DEV=""
 if extroot_active; then
     EXTROOT_ACTIVE=1
     EXTROOT_DEV=$(quick_overlay_dev)
+fi
+
+# ============================================================
+#  Фоллбэк активен?
+#    overlay смонтирован в /rom/overlay вместо /overlay.
+#    Это признак проблемы: preinit не смог поднять overlay
+#    нормально и ушёл в аварийный режим.
+# ============================================================
+FALLBACK_ACTIVE=0
+if awk '$2=="/rom/overlay" {found=1; exit} END{exit !found}' /proc/mounts; then
+    FALLBACK_ACTIVE=1
 fi
 
 # ============================================================
@@ -1112,12 +1127,21 @@ BANNER
 		accessible="(недоступно)"
     fi
 
+    if [ "$FALLBACK_ACTIVE" = "1" ]; then
+        echo
+        echo -e "${CLR_ORANGE}!!! ОБНАРУЖЕНА ПРОБЛЕМА С OVERLAY !!!${CLR_RESET}"
+        echo -e "${CLR_ORANGE} overlay работает в аварийном режиме (фоллбэк).${CLR_RESET}"
+    fi
+
     echo
     echo -e "${CLR_YELLOW}Действие:${CLR_RESET}"
     echo -e "  1) Роутер → USB-накопитель с форматированием накопителя  ${CLR_ORANGE}${accessible}${CLR_RESET}"
     echo -e "  2) Роутер → USB-накопитель без форматирования накопителя ${CLR_ORANGE}${accessible}${CLR_RESET}"
     echo -e "  3) Восстановить загрузку с внутренней памяти роутера"
 	echo -e "  4) Выбор загрузочного устройства, клонирование накопителя"
+    if [ "$FALLBACK_ACTIVE" = "1" ]; then
+        echo -e "  ${CLR_ORANGE}5) Исправить аварийный режим overlay (рекомендуется)${CLR_RESET}"
+    fi
     echo -e "  0) Выход"
     printf "${CLR_YELLOW}Выбор: ${CLR_RESET}"
     read CHOICE
@@ -1136,6 +1160,16 @@ BANNER
             fi
             continue
             ;;
+        5)
+            if [ "$FALLBACK_ACTIVE" != "1" ]; then
+                echo
+                echo "Пункт 5 доступен только при обнаружении фоллбэка."
+                sleep 2
+                continue
+            fi
+            MODE=fallback_fix
+            CHOICE_TEXT="исправить аварийный режим overlay"
+            ;;
         0) echo "Выход."; exit 0 ;;
         *)
             echo
@@ -1145,11 +1179,11 @@ BANNER
             ;;
     esac
 
-    if [ "$EXTROOT_ACTIVE" = "1" ] && [ "$MODE" != "restore" ]; then
+    if [ "$EXTROOT_ACTIVE" = "1" ] && [ "$MODE" != "restore" ] && [ "$MODE" != "fallback_fix" ]; then
         echo
         echo -e "${CLR_ORANGE}Невозможно: overlay уже на $EXTROOT_DEV.${CLR_RESET}"
         echo "  Перенос c USB на тот же USB не имеет практического смысла."
-        echo "  Вам доступны только пункты 3, 4, 0"
+        echo "  Вам доступны только пункты 3, 4, 5, 0"
         echo
         printf "  Нажмите Enter для продолжения (авто через 10с): "
         read -t 10 _
@@ -1159,6 +1193,40 @@ BANNER
 
     break
 done
+
+# ============================================================
+#  ВЕТКА 5 — автоисправление фоллбэка overlay.
+#
+#  overlay сейчас в /rom/overlay. Нормальная структура
+#  в ubifs есть, но preinit свалился в аварийный режим.
+#  Что делаем:
+#    1) чистим fstab.extroot/rwm (там висячий указатель)
+#    2) mkdir /overlay в живом корне (ляжет в upper)
+#    3) sync + ребут
+# ============================================================
+if [ "$MODE" = "fallback_fix" ]; then
+
+    fix_uboot_env
+    stage0_deps
+
+    echo
+    echo "      очищаю fstab.extroot/rwm..."
+    uci -q delete fstab.extroot
+    uci -q delete fstab.rwm
+    uci commit fstab
+    echo "      fstab очищен."
+
+    echo "      создаю /overlay..."
+    mkdir -p /overlay
+    sync
+    echo -e "${CLR_GREEN}      /overlay создан${CLR_RESET}"
+
+    echo
+    echo -e "${CLR_GREEN}Готово. Ребут для применения.${CLR_RESET}"
+
+    confirm_reboot_or_die 0
+    exit 0
+fi
 
 # ============================================================
 #  ВЕТКА 3 — восстановление загрузки с внутренней памяти
