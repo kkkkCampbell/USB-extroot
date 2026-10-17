@@ -354,7 +354,7 @@ switch_overlay_after_clone() {
     case "$a" in
         y|Y|yes|YES)
             sync
-            sleep 2
+            sleep 3
             soft_reboot_with_fallback 40
             ;;
         *)
