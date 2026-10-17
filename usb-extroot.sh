@@ -9,6 +9,7 @@
 #  Самопереезд в RAM.
 # ------------------------------------------------------------
 path="/opt/usb-extroot"
+TEST_MODE=0
 if [ ! -d "/opt/usb-extroot" ]; then mkdir -p "/opt/usb-extroot"; fi
 
 case "$0" in
@@ -238,8 +239,8 @@ soft_reboot_with_fallback() {
 
 sync
 sleep 3
-echo b > /proc/sysrq-trigger # For testing purposes
-reboot -f # For testing purposes
+# echo b > /proc/sysrq-trigger # For testing purposes
+# reboot -f # For testing purposes
 
 
     local delay="${1:-40}"
@@ -252,8 +253,14 @@ reboot -f # For testing purposes
 		reboot -f
     " &
 
-    sleep 1
-    reboot
+	umount -a -r >/dev/null 2>&1
+	sleep 2
+	if [ "$MODE" = "noformat" ] || [ "$MODE" = "restore" ] ; then
+		#echo "$MODE"
+		reboot -f
+	fi
+	reboot
+	echo "Перезагружаю роутер..."
 }
 
 # ============================================================
@@ -296,7 +303,7 @@ confirm_reboot_or_die() {
 
     [ "$need_share_down" = "1" ] && share_down
 
-    echo "Перезагружаюсь..."
+    echo "    Перезагружаюсь..."
 	echo -e "${CLR_ORANGE}    При перезагрузке  возможно зависание роутера!"
 	echo -e "    Перезапустите роутер отключив и подав питание.${CLR_RESET}"
     sync
@@ -803,7 +810,7 @@ SRC_BASE="https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/
 
 _dep_looks_valid() {
     local f="$1" marker="$2"
-    [ -s "$f" ] || return 1
+    [ -f "$f" ] && [ -s "$f" ] || return 1
     head -n 5 "$f" | grep -qi '<html\|<!doctype' && return 1
     grep -q "$marker" "$f" || return 1
     return 0
@@ -846,7 +853,7 @@ _dep_try_download() {
 
 _dep_find_local() {
     local name="$1" marker="$2" src
-    for src in "/root/$name" "/$name" "/opt/usb-extroot" "/tmp/$name"; do
+    for src in "/root/$name" "/$name" "/opt/usb-extroot/$name" "/tmp/$name"; do
         if _dep_looks_valid "$src" "$marker"; then
             echo "$src"
             return 0
@@ -1033,18 +1040,17 @@ pkg_ensure
 echo
 echo "Монтирую съёмные накопители..."
 mount_removable_all
-if [ "$flash" = "no" ]; then
-	echo -e "${CLR_ORANGE}НАКОПИТЕЛИ НЕ ОБНАРУЖЕНЫ!${CLR_RESET}"
-	echo -e "${CLR_ORANGE}ПОДКЛЮЧИТЕ ФЛЭШКУ И ПЕРЕЗАПУСТИТЕ СКРИПТ${CLR_RESET}"
-	exit 1
-fi
+
 
 # ============================================================
 #  МЕНЮ
 # ============================================================
 while :; do
     clear
-
+	if [ "$flash" = "no" ]; then
+		echo -e "${CLR_ORANGE}НАКОПИТЕЛИ НЕ ОБНАРУЖЕНЫ!${CLR_RESET}"
+		echo -e "${CLR_ORANGE}ПОДКЛЮЧИТЕ ФЛЭШКУ И ПЕРЕЗАПУСТИТЕ СКРИПТ${CLR_RESET}"
+	fi
     echo "============================================================"
     echo "usb-extroot.sh  ${ver}"
     cat <<'BANNER'
