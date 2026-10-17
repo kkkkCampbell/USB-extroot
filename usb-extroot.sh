@@ -1,29 +1,15 @@
 #!/bin/sh
 # ============================================================
-#  usb-extroot.sh  v0.1.16
+#  usb-extroot.sh  v0.1.18
 #  Перенос overlay OpenWrt на USB-накопитель (extroot)
 #  Лог: /tmp/usb-extroot.log (сброс в overlay в конце)
 #  Бэкап: /tmp/.usb-extroot-x7k2m9q4p1w8/ (tmpfs, RAM)
 # ============================================================
 # ------------------------------------------------------------
 #  Самопереезд в RAM.
-#
-#  Скрипт обычно лежит в /root (overlay). Когда overlay
-#  в процессе работы размонтируется и пересобирается,
-#  ядро теряет доступ к overlayfs-superblock, и построчное
-#  чтение скрипта начинает возвращать чужой или устаревший
-#  контент. Копируем себя в /tmp (tmpfs) и перезапускаемся
-#  оттуда — с этого момента overlay нам больше не важен.
-#
-#  Проверка [ -f "$0" ] — только регулярный файл.
-#  При запуске через sh <(wget ...) $0 это /dev/fd/NN,
-#  симлинк на пайп. cp такого «файла» отдаёт не весь
-#  скрипт, а только непрочитанный остаток пайпа — то
-#  есть кусок с середины. Поэтому в этом режиме
-#  самопереезд не делаем: sh и так читает из того же
-#  пайпа, что и раньше.
 # ------------------------------------------------------------
 path="/opt/usb-extroot"
+if [ ! -d "/opt/usb-extroot" ]; then mkdir -p "/opt/usb-extroot"; fi
 
 case "$0" in
     /tmp/*|/dev/shm/*|/run/*) ;;
@@ -38,7 +24,7 @@ case "$0" in
         ;;
 esac
 
-ver="v0.1.16"
+ver="v0.1.18"
 
 CLR_RESET="\033[0m"
 CLR_GREEN="\033[32m"
@@ -67,14 +53,60 @@ PKG_REPAIR_SVC_STOPPED=0
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
+# ------------------------------------------------------------
+#  fs доступен ядру? (builtin, загружен или установлен модулем)
+# ------------------------------------------------------------
+fs_in_kernel() {
+    local fs="$1"
+    grep -qw "$fs" /proc/filesystems 2>/dev/null && return 0
+    find "/lib/modules/$(uname -r)" -name "${fs}.ko*" 2>/dev/null | grep -q . && return 0
+    return 1
+}
+
+ext4_in_kernel() { fs_in_kernel ext4; }
+
+# ------------------------------------------------------------
+#  usb-storage загружен или установлен?
+# ------------------------------------------------------------
+usb_storage_in_kernel() {
+    lsmod 2>/dev/null | grep -qE '^(usb_storage|uas)[[:space:]]' && return 0
+    find "/lib/modules/$(uname -r)" \( -name 'usb-storage.ko*' -o -name 'uas.ko*' \) 2>/dev/null | grep -q . && return 0
+    return 1
+}
+
+# ------------------------------------------------------------
+#  Полный tar, а не busybox-огрызок.
+# ------------------------------------------------------------
+tar_is_full() {
+    local t
+    t=$(command -v tar 2>/dev/null) || return 1
+    case "$(readlink -f "$t" 2>/dev/null)" in
+        */busybox|*/busybox.*) return 1 ;;
+    esac
+    tar --version 2>/dev/null | grep -qE 'GNU tar|bsdtar' && return 0
+    return 1
+}
+
+# ------------------------------------------------------------
+#  Установлен ли конкретный пакет (по его «якорю» в системе)
+# ------------------------------------------------------------
+pkg_present() {
+    case "$1" in
+        block-mount)      have block ;;
+        uci)              have uci ;;
+        tar)              tar_is_full ;;
+        e2fsprogs)        have mkfs.ext4 ;;
+        kmod-fs-ext4)     fs_in_kernel ext4 ;;
+        kmod-fs-vfat)     fs_in_kernel vfat ;;
+        kmod-fs-exfat)    fs_in_kernel exfat ;;
+        kmod-usb-storage) usb_storage_in_kernel ;;
+        wget-ssl)         have wget ;;
+        *)                return 1 ;;
+    esac
+}
+
 # ============================================================
 #  Поиск устройства внутреннего overlay.
-#  Единственный критерий — имя UBI-тома "rootfs_data".
-#
-#  Возвращает:
-#    0 — ровно один том, устройство в stdout
-#    1 — ни одного тома
-#    2 — больше одного тома, список устройств в stdout
 # ============================================================
 find_internal_overlay_dev() {
     local nf d found count
@@ -145,9 +177,7 @@ share_down() {
 }
 
 # ============================================================
-#  Перехват INT/TERM/HUP: восстановить сеть и убрать шару,
-#  если скрипт оборван посередине (Ctrl+C, kill, SIGHUP).
-#  EXIT не трогаем — иначе конфликт с обычными exit 0/1.
+#  Перехват INT/TERM/HUP
 # ============================================================
 trap 'echo; echo "Прервано. Восстанавливаю состояние..."; pkg_repair_finish; share_down; exit 130' INT TERM HUP
 
@@ -178,21 +208,15 @@ pkg_repair_finish() {
     PKG_REPAIR_ACTIVE=0
 }
 
-# =================================================================================
+# ============================================================
 #  Мягкий ребут с fallback на жёсткий.
-#
-#  Логика:
-#    1. Запускаем сторож в отдельной сессии (setsid).
-#       Сторож игнорирует SIGTERM и спит $delay секунд.
-#    2. В основном процессе делаем мягкий `reboot`:
-#       - если он сработает — система уходит, сторож умирает вместе с ней;
-#       - если залипнет после SIGTERM и до SIGKILL — сторож выживет,
-#         доспит и дёрнет `echo b > /proc/sysrq-trigger`, или reboot -f.
-#    3. Через $delay секунд сторож делает `reboot -f`.
-#
-#  $1 — таймаут в секундах (по умолчанию 40).
-# ==================================================================================
+# ============================================================
 soft_reboot_with_fallback() {
+
+
+reboot -f # For testing purposes
+
+
     local delay="${1:-40}"
 
     setsid sh -c "
@@ -209,10 +233,6 @@ soft_reboot_with_fallback() {
 
 # ============================================================
 #  Ребут с 10-секундным окном отмены.
-#  Любая клавиша — отмена → предупреждение → exit 1.
-#  Иначе: мягкий ребут с fallback.
-#
-#  $1 — "1" если перед ребутом нужно снять шару, иначе "0".
 # ============================================================
 confirm_reboot_or_die() {
     local need_share_down="${1:-0}"
@@ -252,6 +272,8 @@ confirm_reboot_or_die() {
     [ "$need_share_down" = "1" ] && share_down
 
     echo "Перезагружаюсь..."
+	echo -e "${CLR_ORANGE}При перезагрузке  возможно зависание роутера!"
+	echo -e "Перезапустите роутер отключив и подав питание.${CLR_RESET}"
     sync
     sleep 2
     soft_reboot_with_fallback 40
@@ -294,7 +316,7 @@ detect_pm() {
 }
 
 # ============================================================
-#  Родительское устройство для sd*/mmcblk*
+#  Родительское устройство
 # ============================================================
 parent_dev() {
     local d="$1"
@@ -319,11 +341,6 @@ is_usb() {
     return 1
 }
 
-# ============================================================
-#  Внутреннее (впаянное) устройство:
-#    ubi*, mtdblock*, root       — NAND/NOR
-#    mmcblk* с removable=0       — eMMC
-# ============================================================
 is_internal_dev() {
     local parent
     case "$1" in
@@ -339,11 +356,6 @@ is_internal_dev() {
     return 1
 }
 
-# ============================================================
-#  Съёмное внешнее хранилище?
-#    sd*     -> is_usb
-#    mmcblk* -> removable=1 (SD-карта), removable=0 (eMMC) отсеивается
-# ============================================================
 is_removable_storage() {
     local parent
     parent=$(basename "$(parent_dev "$1")")
@@ -378,7 +390,7 @@ describe() {
     local model=$(cat /sys/block/$parent/device/model  2>/dev/null | tr -d '\n')
     local blocks=$(cat /sys/block/$parent/size 2>/dev/null)
     local size=$(awk -v x="$blocks" 'BEGIN{printf "%.1fG", x*512/1024/1024/1024}')
-    local name=$(echo "${vendor} ${model}" | sed 's/  *//g; s/^ //; s/ $//')
+    local name=$(echo "${vendor} ${model}" | tr -s ' ')
     echo "$dev $size $name"
 }
 
@@ -546,208 +558,155 @@ storage_quick_check() {
     return 1
 }
 
-# ============================================================
-#  Система зависимостей.
-#
-#  DEP_<набор>_CMDS  — команды вида "cmd:pkg"
-#  DEP_<набор>_FS    — файловые системы вида "fs:kmod"
-#
-#  Наборы:
-#    base  — то, что нужно скрипту в любой операции
-#    ext4  — то, что нужно только для операций с ext4 (запись)
-#
-#  Спец-проверки:
-#    GNU tar (для base) — find_gnu_tar
-#    Сеть (для base)    — есть wget или curl
-# ============================================================
-
-DEP_BASE_CMDS="
-awk:busybox
-sed:busybox
-grep:busybox
-cat:busybox
-head:busybox
-cut:busybox
-tr:busybox
-cp:busybox
-mv:busybox
-rm:busybox
-mkdir:busybox
-rmdir:busybox
-chmod:busybox
-ln:busybox
-sleep:busybox
-sync:busybox
-printf:busybox
-find:busybox
-tee:busybox
-mkfifo:busybox
-mount:busybox
-umount:busybox
-df:busybox
-du:busybox
-basename:busybox
-dirname:busybox
-readlink:busybox
-block:block-mount
-uci:uci
-"
-
-DEP_BASE_FS="
-ubifs:kmod-fs-ubifs
-"
-
-DEP_EXT4_CMDS="
-mkfs.ext4:e2fsprogs
-"
-
-DEP_EXT4_FS="
-ext4:kmod-fs-ext4
-"
-
-DEP_NET="wget:wget-ssl curl:curl"
-
 # ------------------------------------------------------------
-#  Поиск GNU tar. Возвращает путь через stdout.
-# ------------------------------------------------------------
-find_gnu_tar() {
-    local cand
-    for cand in tar /usr/bin/tar /usr/libexec/tar-gnu /bin/tar; do
-        if [ -x "$cand" ] || have "$cand"; then
-            if $cand --version 2>&1 | grep -qi 'GNU tar'; then
-                echo "$cand"
-                return 0
-            fi
-        fi
-    done
-    return 1
-}
-
-# ------------------------------------------------------------
-#  Батч-установка (один вызов pm, а не по пакету)
+#  Батч-установка (один вызов pm)
 # ------------------------------------------------------------
 install_pkgs() {
     local pm="$1" pkgs="$2"
     [ -n "$pkgs" ] || return 0
     case "$pm" in
         apk)  apk add $pkgs ;;
-        opkg) opkg update >/dev/null 2>&1
-              opkg install $pkgs ;;
+        opkg) opkg install $pkgs ;;
         *)    return 1 ;;
     esac
 }
 
 # ------------------------------------------------------------
 #  Проверить и, при необходимости, доустановить зависимости.
-#  $1 — набор: base | ext4
+#  $1 — наборы через пробел: "base" | "ext4" | "removable" | ...
 #  $2 — режим: install (по умолчанию) | check
 # ------------------------------------------------------------
 deps_ensure() {
-    local set="$1" mode="${2:-install}"
-    local cmds fs_list missing still entry cmd pkg fs found_net
+    local sets="$1" mode="${2:-install}"
+    local want="" missing="" p still soft=0
 
-    case "$set" in
-        base)
-            cmds="$DEP_BASE_CMDS"
-            fs_list="$DEP_BASE_FS"
-            ;;
-        ext4)
-            cmds="$DEP_EXT4_CMDS"
-            fs_list="$DEP_EXT4_FS"
-            ;;
-        *)
-            echo "deps_ensure: неизвестный набор '$set'"
-            return 1
+    case " $sets " in
+        *" base "*)      want="$want block-mount uci tar" ;;
+    esac
+    case " $sets " in
+        *" ext4 "*)      want="$want e2fsprogs kmod-fs-ext4" ;;
+    esac
+    case " $sets " in
+        *" removable "*) want="$want kmod-usb-storage kmod-fs-vfat kmod-fs-exfat kmod-fs-ext4"
+                         soft=1 ;;
+    esac
+    case " $sets " in
+        *" base "*)
+            if ! have wget && ! have curl; then
+                want="$want wget-ssl"
+            fi
             ;;
     esac
 
-    missing=""
-
-    for entry in $cmds; do
-        cmd="${entry%%:*}"
-        pkg="${entry#*:}"
-        if ! have "$cmd"; then
-            case " $missing " in
-                *" $pkg "*) ;;
-                *) missing="$missing $pkg" ;;
-            esac
-        fi
+    for p in $want; do
+        pkg_present "$p" || missing="$missing $p"
     done
-
-    for entry in $fs_list; do
-        fs="${entry%%:*}"
-        pkg="${entry#*:}"
-        if ! grep -qw "$fs" /proc/filesystems 2>/dev/null; then
-            case " $missing " in
-                *" $pkg "*) ;;
-                *) missing="$missing $pkg" ;;
-            esac
-        fi
-    done
-
-    if [ "$set" = "base" ]; then
-        if ! find_gnu_tar >/dev/null 2>&1; then
-            case " $missing " in
-                *" tar "*) ;;
-                *) missing="$missing tar" ;;
-            esac
-        fi
-
-        found_net=0
-        for entry in $DEP_NET; do
-            cmd="${entry%%:*}"
-            if have "$cmd"; then found_net=1; break; fi
-        done
-        [ "$found_net" = "0" ] && missing="$missing wget-ssl"
-    fi
-
     missing=$(echo "$missing" | sed 's/^ *//; s/ *$//')
+    DEPS_LAST_MISSING="$missing"
 
     if [ -z "$missing" ]; then
+        echo "      все зависимости на месте"
         return 0
     fi
 
     if [ "$mode" = "check" ]; then
-        echo -e "      ${CLR_ORANGE}не хватает: $missing${CLR_RESET}"
-        echo -e "      ${CLR_YELLOW}будет установлено после подтверждения${CLR_RESET}"
+        echo "      отсутствуют (будут установлены): $missing"
         return 1
     fi
 
-    echo -e "      ${CLR_ORANGE}отсутствуют: $missing${CLR_RESET}"
+    echo "      отсутствуют: $missing"
+    echo "      устанавливаю..."
 
-    if [ "$PM" = "none" ]; then
-        echo -e "${CLR_ORANGE}Нет ни apk, ни opkg — установить нельзя.${CLR_RESET}"
-        return 1
+    case "$PM" in
+        opkg) opkg update >/dev/null 2>&1 ;;
+        apk)  apk update  >/dev/null 2>&1 ;;
+    esac
+
+    if [ "$soft" = "1" ]; then
+        local failed=""
+        for p in $missing; do
+            if install_pkgs "$PM" "$p" >/dev/null 2>&1 && pkg_present "$p"; then
+                :
+            else
+                failed="$failed $p"
+            fi
+        done
+        failed=$(echo "$failed" | sed 's/^ *//; s/ *$//')
+        if [ -n "$failed" ]; then
+            echo -e "${CLR_ORANGE}      не поставлены (пропускаю): $failed${CLR_RESET}"
+        fi
+        DEPS_LAST_MISSING="$failed"
+        return 0
     fi
 
-    echo "      подготовка сети (DNS, блокировщики)..."
+    if install_pkgs "$PM" "$missing"; then
+        still=""
+        for p in $missing; do
+            pkg_present "$p" || still="$still $p"
+        done
+        still=$(echo "$still" | sed 's/^ *//; s/ *$//')
+        if [ -z "$still" ]; then
+            echo "      установлено: $missing"
+            DEPS_LAST_MISSING=""
+            return 0
+        fi
+        echo "      после установки всё ещё отсутствуют: $still"
+        DEPS_LAST_MISSING="$still"
+    fi
+
+    echo
+    echo -e "${CLR_ORANGE}############################################################${CLR_RESET}"
+    echo -e "${CLR_ORANGE}#  УСТАНОВКА ЧЕРЕЗ ОСНОВНУЮ СЕТЬ НЕ УДАЛАСЬ${CLR_RESET}"
+    echo -e "${CLR_ORANGE}############################################################${CLR_RESET}"
+    echo
+    echo "Сейчас будет временно изменён DNS и остановлены сервисы"
+    echo "обхода блокировок (zapret, youtubeUnblock и т.п.) на"
+    echo "время установки пакетов."
+    echo
+    echo -e "${CLR_YELLOW}Если вы подключены по кабелю (Ethernet):${CLR_RESET}"
+    echo -e "${CLR_YELLOW}  связь может прерваться, и вы не увидите дальнейший вывод.${CLR_RESET}"
+    echo -e "${CLR_YELLOW}  Это нормально. Ждите 3–5 минут.${CLR_RESET}"
+    echo -e "${CLR_YELLOW}  Если через 5 минут связь не вернётся — перезагрузите роутер.${CLR_RESET}"
+    echo -e "${CLR_YELLOW}  Всё будет в порядке.${CLR_RESET}"
+    echo
+    echo "Если подключены по Wi-Fi — вывод останется на экране."
+    echo
+    printf "Продолжить? (y/N): "
+    read a
+    case "$a" in
+        y|Y|yes|YES) ;;
+        *)
+            echo "Отменено. Установите пакеты вручную и запустите скрипт заново:"
+            echo "  $PM update"
+            echo "  $PM add $missing"
+            exit 0
+            ;;
+    esac
+
+    echo "      пробую через альтернативный DNS..."
     pkg_repair_start || echo "      сеть не тронута (нечего чинить)"
 
-    echo "      устанавливаю..."
     if ! install_pkgs "$PM" "$missing"; then
         pkg_repair_finish
-        echo -e "${CLR_ORANGE}Установка не удалась: $missing${CLR_RESET}"
+        echo -e "${CLR_ORANGE}Установка не удалась даже после ремонта сети${CLR_RESET}"
+        return 1
+    fi
+
+    still=""
+    for p in $missing; do
+        pkg_present "$p" || still="$still $p"
+    done
+    still=$(echo "$still" | sed 's/^ *//; s/ *$//')
+    if [ -n "$still" ]; then
+        pkg_repair_finish
+        echo -e "${CLR_ORANGE}После установки всё ещё отсутствуют: $still${CLR_RESET}"
+        DEPS_LAST_MISSING="$still"
         return 1
     fi
 
     echo "      восстанавливаю сеть..."
     pkg_repair_finish
-
-    still=""
-    for entry in $cmds; do
-        cmd="${entry%%:*}"
-        have "$cmd" || still="$still $cmd"
-    done
-    for entry in $fs_list; do
-        fs="${entry%%:*}"
-        grep -qw "$fs" /proc/filesystems 2>/dev/null || still="$still $fs"
-    done
-
-    if [ -n "$still" ]; then
-        echo -e "${CLR_ORANGE}После установки всё ещё нет:$still${CLR_RESET}"
-        return 1
-    fi
-
+    DEPS_LAST_MISSING=""
     return 0
 }
 
@@ -768,26 +727,12 @@ stage0_deps() {
 
 Проверь вручную:
   $PM update
-  $PM add <пакеты из сообщения выше>
+  $PM add ${DEPS_LAST_MISSING:-block-mount uci tar}
 
 Если что-то недоступно в фиде — поставь вручную и запусти скрипт заново."
     fi
-
-    TARBIN=$(find_gnu_tar)
-    if [ -z "$TARBIN" ]; then
-        if [ "$mode" = "check" ]; then
-            return 0
-        fi
-        die "$STAGE0" "GNU tar не найден.
-
-  command -v tar  -> $(command -v tar 2>/dev/null || echo 'нет')
-  tar --version    -> $(tar --version 2>&1 | head -1)
-
-Поставь GNU tar и запусти скрипт заново."
-    fi
-
+    echo -e "${CLR_GREEN}      tar: $(tar --version 2>&1 | head -1)${CLR_RESET}"
     echo -e "${CLR_GREEN}      базовые зависимости на месте${CLR_RESET}"
-    echo -e "${CLR_GREEN}      GNU tar: ${TARBIN}${CLR_RESET}"
 }
 
 stage1_overlay() {
@@ -933,7 +878,6 @@ quick_overlay_dev() {
 
 # ============================================================
 #  extroot уже активен?
-#    overlay смонтирован И его устройство — внешнее.
 # ============================================================
 extroot_active() {
     local qdev
@@ -952,9 +896,6 @@ fi
 
 # ============================================================
 #  Фоллбэк активен?
-#    overlay смонтирован в /rom/overlay вместо /overlay.
-#    Это признак проблемы: preinit не смог поднять overlay
-#    нормально и ушёл в аварийный режим.
 # ============================================================
 FALLBACK_ACTIVE=0
 if awk '$2=="/rom/overlay" {found=1; exit} END{exit !found}' /proc/mounts; then
@@ -962,20 +903,7 @@ if awk '$2=="/rom/overlay" {found=1; exit} END{exit !found}' /proc/mounts; then
 fi
 
 # ============================================================
-#  Подтягивание модулей (clone-overlay.sh, switch-overlay.sh).
-#
-#  Логика:
-#    1) пробуем скачать ОБА свежих с GitHub во временные .new
-#       (3 попытки на файл, пауза 1с между)
-#    2) если ОБА скачались и валидны:
-#         - заменяем ими рабочие копии в /tmp
-#         - подключаем
-#    3) если хотя бы один не скачался:
-#         - .new удаляем, ничего не заменяем
-#         - ищем доступные "старые" в /root, /, /tmp
-#         - подключаем то, что нашли (может быть частично)
-#
-#  Консистентность пары: либо оба новые, либо оба старые.
+#  Подтягивание модулей
 # ============================================================
 SRC_BASE="https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/main"
 
@@ -1038,24 +966,22 @@ load_dependencies() {
     local new_switch="/tmp/switch-overlay.sh.new"
     local ok_clone=0 ok_switch=0
     local local_clone local_switch
-	clear
-	echo
-	echo "Скачиваю модули с github"
-	sleep 1
+    clear
+    echo
+    echo "Скачиваю модули с github"
+    sleep 1
     echo "      проверяю модули..."
 
-	if [ "$TEST_MODE" != "1" ]; then
+    if [ "$TEST_MODE" != "1" ]; then
         _dep_try_download "clone-overlay.sh"  "clone_overlay_interactive" "$new_clone"  && ok_clone=1
         _dep_try_download "switch-overlay.sh" "second_drive_menu"          "$new_switch" && ok_switch=1
 
         if [ "$ok_clone" = "1" ] && [ "$ok_switch" = "1" ]; then
             echo -e "${CLR_GREEN}      оба модуля получены с GitHub${CLR_RESET}"
 
-            # Использовать сейчас — из /tmp
             mv -f "$new_clone"  "/tmp/clone-overlay.sh"
             mv -f "$new_switch" "/tmp/switch-overlay.sh"
 
-            # Сохранить на будущее — в $path
             if [ -w "$(dirname "$path")" ] || [ -w "$path" ]; then
                 mkdir -p "$path" 2>/dev/null
                 cp -f /tmp/clone-overlay.sh  "$path/clone-overlay.sh"  2>/dev/null
@@ -1100,10 +1026,121 @@ load_dependencies() {
     return 0
 }
 
+# ============================================================
+#  Безусловное монтирование съёмных накопителей.
+# ============================================================
+mount_removable_all() {
+    local d p base mnt fs any found listed parts_found w usb_ms _u
+
+    any=0
+    found=0
+
+    # 1. modprobe всех релевантных драйверов (no-op если уже загружены).
+    #    Решает случай: пакет установлен в этом же запуске, .ko есть,
+    #    но kmodloader успел подгрузить модуль уже после deps_ensure.
+    if have modprobe; then
+        modprobe usb-storage 2>/dev/null || modprobe usb_storage 2>/dev/null || true
+        modprobe uas 2>/dev/null || true
+        modprobe ext4 2>/dev/null || true
+        modprobe vfat 2>/dev/null || true
+        modprobe exfat 2>/dev/null || true
+    fi
+
+    # 2. Если в /sys есть USB-интерфейс класса 08 (mass storage) —
+    #    подождать появления /dev/sd? до 10 сек. Иначе sda может
+    #    появиться уже после того, как мы прошли этот цикл.
+    usb_ms=0
+    for _u in /sys/bus/usb/devices/*:*/bInterfaceClass; do
+        [ -f "$_u" ] || continue
+        [ "$(cat "$_u" 2>/dev/null)" = "08" ] && { usb_ms=1; break; }
+    done
+    if [ "$usb_ms" = "1" ]; then
+        w=0
+        while [ "$w" -lt 10 ]; do
+            ls /dev/sd? >/dev/null 2>&1 && break
+            sleep 1
+            w=$((w + 1))
+        done
+    fi
+
+    for d in /dev/sd? /dev/mmcblk?; do
+        [ -b "$d" ] || continue
+        is_removable_storage "$d" || continue
+        found=$((found + 1))
+
+        parts_found=0
+        for p in ${d}*; do
+            [ -b "$p" ] || continue
+            case "$(basename "$p")" in
+                sd[a-z][0-9]*|mmcblk[0-9]*p[0-9]*) parts_found=1 ;;
+                *) continue ;;
+            esac
+
+            awk -v dev="$p" '$1==dev {f=1; exit} END{exit !f}' /proc/mounts && continue
+
+            base=$(basename "$p")
+            mnt="/mnt/$base"
+            mkdir -p "$mnt" 2>/dev/null || continue
+
+            if mount "$p" "$mnt" 2>/dev/null; then
+                fs=$(awk -v m="$mnt" '$2==m {print $3; exit}' /proc/mounts)
+                echo "      $p -> $mnt (${fs:-?})"
+                any=1
+            fi
+        done
+
+        if [ "$parts_found" = "0" ]; then
+            awk -v dev="$d" '$1==dev {f=1; exit} END{exit !f}' /proc/mounts && continue
+            base=$(basename "$d")
+            mnt="/mnt/$base"
+            mkdir -p "$mnt" 2>/dev/null || continue
+            if mount "$d" "$mnt" 2>/dev/null; then
+                fs=$(awk -v m="$mnt" '$2==m {print $3; exit}' /proc/mounts)
+                echo "      $d -> $mnt (${fs:-?}, whole-disk)"
+                any=1
+            fi
+        fi
+    done
+
+    if [ "$found" = "0" ]; then
+        echo "      (съёмных накопителей не обнаружено)"
+        echo "        /dev:"
+        listed=0
+        for d in /dev/sd? /dev/mmcblk?; do
+            [ -b "$d" ] || continue
+            b=$(basename "$d")
+            rem=$(cat /sys/block/$b/removable 2>/dev/null)
+            real=$(readlink -f /sys/block/$b 2>/dev/null)
+            echo "          $d removable=${rem:-?} path=${real:-<no sysfs>}"
+            listed=1
+        done
+        [ "$listed" = "0" ] && echo "          пусто (нет /dev/sd*, /dev/mmcblk*)"
+
+        echo "        lsmod:"
+        lsmod 2>/dev/null | grep -E 'usb_storage|uas|usbcore|xhci|ehci|ohci' || echo "          (модули USB не загружены)"
+
+        echo "        /sys/bus/usb/devices:"
+        ls /sys/bus/usb/devices/ 2>/dev/null || echo "          (нет)"
+
+        echo "        dmesg | tail -15:"
+        dmesg 2>/dev/null | tail -15
+    elif [ "$any" = "0" ]; then
+        echo "      (найдено $found, все уже смонтированы или не содержат распознанной ФС)"
+    fi
+    return 0
+}
+
 load_dependencies
 
+PM=$(detect_pm)
+deps_ensure "removable" install
+
+echo
+echo "Монтирую съёмные накопители..."
+mount_removable_all
+
 # ============================================================
-#  МЕНЮ (цикл: возврат при недопустимом выборе)
+#  МЕНЮ
 # ============================================================
 while :; do
     clear
@@ -1118,12 +1155,12 @@ while :; do
  Лог: /tmp/usb-extroot.log
 ============================================================
 BANNER
-	accessible=""
+    accessible=""
     if [ "$EXTROOT_ACTIVE" = "1" ]; then
         echo
         echo -e "${CLR_ORANGE} /overlay уже размещён на внешнем носителе: ${CLR_GREEN}$(describe "$EXTROOT_DEV")${CLR_RESET}"
         echo " Пункты 1 и 2 недоступны."
-		accessible="(недоступно)"
+        accessible="(недоступно)"
     fi
 
     if [ "$FALLBACK_ACTIVE" = "1" ]; then
@@ -1137,7 +1174,7 @@ BANNER
     echo -e "  1) Роутер → USB-накопитель с форматированием накопителя  ${CLR_ORANGE}${accessible}${CLR_RESET}"
     echo -e "  2) Роутер → USB-накопитель без форматирования накопителя ${CLR_ORANGE}${accessible}${CLR_RESET}"
     echo -e "  3) Восстановить загрузку с внутренней памяти роутера"
-	echo -e "  4) Выбор загрузочного устройства, клонирование накопителя"
+    echo -e "  4) Выбор загрузочного устройства, клонирование накопителя"
     if [ "$FALLBACK_ACTIVE" = "1" ]; then
         echo -e "  ${CLR_ORANGE}5) Исправить аварийный режим overlay (рекомендуется)${CLR_RESET}"
     fi
@@ -1195,18 +1232,8 @@ done
 
 # ============================================================
 #  ВЕТКА 5 — автоисправление фоллбэка overlay.
-#
-#  overlay сейчас в /rom/overlay. Нормальная структура
-#  в ubifs есть, но preinit свалился в аварийный режим.
-#  Что делаем:
-#    1) чистим fstab.extroot/rwm (там висячий указатель)
-#    2) mkdir /overlay в живом корне (ляжет в upper)
-#    3) sync + ребут
 # ============================================================
 if [ "$MODE" = "fallback_fix" ]; then
-
-    fix_uboot_env
-    stage0_deps
 
     echo
     echo "      очищаю fstab.extroot/rwm..."
@@ -1216,7 +1243,18 @@ if [ "$MODE" = "fallback_fix" ]; then
     echo "      fstab очищен."
 
     echo "      создаю /overlay..."
-    mkdir -p /overlay
+    if ! mkdir -p /overlay 2>/tmp/mkdir.err; then
+        echo -e "${CLR_ORANGE}      mkdir /overlay не удался:${CLR_RESET}"
+        cat /tmp/mkdir.err 2>/dev/null
+        die "$CHOICE_TEXT" "Не смог создать /overlay.
+
+Проверь:
+  ls -la /overlay
+  mount | grep overlay
+  touch /overlay/test 2>&1
+  df -h /overlay"
+    fi
+
     sync
     echo -e "${CLR_GREEN}      /overlay создан${CLR_RESET}"
 
@@ -1380,14 +1418,14 @@ EOF
     fi
     chmod +x "$UBI_MNT/upper/etc/rc.local"
     sync
-	sleep 3
+    sleep 3
 
     cp /tmp/usb-extroot.log "$UBI_MNT/upper/root/usb-extroot.log" 2>/dev/null || true
     mkdir -p "$UBI_MNT/overlay"
     [ -e "$UBI_MNT/upper/overlay" ] && [ ! -d "$UBI_MNT/upper/overlay" ] && rm -f "$UBI_MNT/upper/overlay"
     mkdir -p "$UBI_MNT/upper/overlay"
     sync
-	sleep 3
+    sleep 3
 
     umount "$UBI_MNT" 2>/dev/null || true
     echo "      reboot_after.sh + rc.local в $UBI_DEV подготовлены."
@@ -1405,8 +1443,23 @@ fi
 # ============================================================
 
 if ! storage_quick_check; then
+    echo
+    echo "      диагностика /dev:"
+    diag_found=0
+    for d in /dev/sd? /dev/mmcblk?; do
+        [ -b "$d" ] || continue
+        b=$(basename "$d")
+        rem=$(cat /sys/block/$b/removable 2>/dev/null)
+        echo "        $d removable=${rem:-?}"
+        diag_found=1
+    done
+    [ "$diag_found" = "0" ] && echo "        /dev/sd* и /dev/mmcblk* отсутствуют — не установлен kmod-usb-storage?"
     die "$CHOICE_TEXT" "Внешних съёмных накопителей не найдено.
-Подключите флешку/SD-карту и запустите скрипт заново."
+Подключите флешку/SD-карту и запустите скрипт заново.
+Если флешка уже подключена — проверь:
+  lsusb
+  dmesg | tail -20
+  lsmod | grep -E 'usb_storage|uas'"
 fi
 
 CUR_OVERLAY_MP=$(get_current_overlay)
@@ -1419,12 +1472,6 @@ fi
 
 SKIP_PARENT=$(parent_dev "$CUR_OVERLAY_DEV")
 
-# ============================================================
-#  Ранняя проверка: есть ли вообще куда переносить.
-#  Накопитель, на котором уже overlay, отсеивается по родителю.
-#  Если после отсева кандидатов нет — дальше идти некуда.
-#  Это read-only проверка, до любых изменений системы.
-# ============================================================
 USB_TARGET=""
 for d in /dev/sd? /dev/mmcblk?; do
     [ -b "$d" ] || continue
@@ -1443,11 +1490,6 @@ if [ -z "$USB_TARGET" ]; then
 Подключи другой накопитель, либо вернись на внутренний overlay (режим 3)."
 fi
 
-# ============================================================
-#  Только теперь — изменяющие операции.
-#  Проверка ФС для режима noformat — в stage2_find_usb,
-#  после финального выбора $PART.
-# ============================================================
 fix_uboot_env
 stage0_deps check
 stage1_overlay
@@ -1515,7 +1557,7 @@ else
     echo "Действие: удаление overlay-структуры на $PART (upper/, work/, .fs_state)"
 fi
 echo
-echo -e "Для подтверждения ${CLR_ORANGE}УНИЧТОЖЕНИЯ ДАННЫХ НА НАКОПИТЕЛЕ${CLR_RESET} введите число::"
+echo -e "Для подтверждения ${CLR_ORANGE}УНИЧТОЖЕНИЯ ДАННЫХ НА НАКОПИТЕЛЕ${CLR_RESET} введите число:"
 echo
 echo -e "        ${CLR_YELLOW}${CONFIRM_CODE}${CLR_RESET}"
 echo
@@ -1537,30 +1579,12 @@ echo
 STAGE5="[5/9] пакеты"
 echo "$STAGE5 ..."
 
-if ! deps_ensure base install; then
-    die "$STAGE5" "Базовые зависимости не установлены.
+if ! deps_ensure "base ext4" install; then
+    die "$STAGE5" "Не удалось установить зависимости: ${DEPS_LAST_MISSING:-<неизвестно>}
 
 Проверь вручную:
   $PM update
-  $PM add <пакеты из сообщения выше>"
-fi
-
-TARBIN=$(find_gnu_tar)
-if [ -z "$TARBIN" ]; then
-    die "$STAGE5" "GNU tar не найден.
-
-  command -v tar  -> $(command -v tar 2>/dev/null || echo 'нет')
-  tar --version    -> $(tar --version 2>&1 | head -1)
-
-Поставь GNU tar и запусти скрипт заново."
-fi
-
-if ! deps_ensure ext4 install; then
-    die "$STAGE5" "Не удалось подготовить пакеты для работы с ext4.
-
-Проверь вручную:
-  $PM update
-  $PM add kmod-fs-ext4 e2fsprogs"
+  $PM add ${DEPS_LAST_MISSING:-block-mount uci tar e2fsprogs kmod-fs-ext4}"
 fi
 
 echo -e "${CLR_GREEN}      пакеты на месте${CLR_RESET}"
@@ -1598,10 +1622,6 @@ echo -e "${CLR_GREEN}      staging корректный${CLR_RESET}"
 
 # ============================================================
 #  ШАГ 7. Формат / очистка + копирование staging на USB
-#
-#  Overlay-источник не трогаем: upper/ уже в /tmp,
-#  система работает с текущего overlay. fuser/umount
-#  касаются только целевых точек ($MNT, $PART, $TARGET).
 # ============================================================
 echo
 STAGE7="[7/9] подготовка $PART"
@@ -1860,7 +1880,7 @@ find "$STAGE_DIR/overlay/upper" -name '.wh.*' -delete 2>/dev/null || true
 find "$STAGE_DIR/overlay/upper" -type d -empty -delete 2>/dev/null || true
 
 echo "      создаю архив $BACKUP_ARCHIVE ..."
-if ! $TARBIN -C "$STAGE_DIR" -czf "$BACKUP_ARCHIVE" overlay 2>/tmp/tar_read.err; then
+if ! tar -C "$STAGE_DIR" -czf "$BACKUP_ARCHIVE" overlay 2>/tmp/tar_read.err; then
     echo "      tar errors:"
     head -20 /tmp/tar_read.err
     umount "$MNT" 2>/dev/null || true
@@ -1868,7 +1888,7 @@ if ! $TARBIN -C "$STAGE_DIR" -czf "$BACKUP_ARCHIVE" overlay 2>/tmp/tar_read.err;
 Staging цел: $STAGE_DIR"
 fi
 
-if ! $TARBIN -tzf "$BACKUP_ARCHIVE" >/dev/null 2>&1; then
+if ! tar -tzf "$BACKUP_ARCHIVE" >/dev/null 2>&1; then
     umount "$MNT" 2>/dev/null || true
     fatal "$STAGE8" "Архив повреждён: $BACKUP_ARCHIVE"
 fi
@@ -1986,9 +2006,14 @@ rm -rf "$STAGE_DIR" 2>/dev/null || true
 
 echo
 echo -e "${CLR_GREEN}================================================================${CLR_RESET}"
+echo
 echo -e "${CLR_GREEN} Готово. Бэкап: $BACKUP_ARCHIVE${CLR_RESET}"
 echo -e "${CLR_YELLOW}    Доступ к бэкапу по локальной сети: \\\\\\\\$(get_router_ip)\\overlaybackup${CLR_RESET}"
 echo -e "${CLR_YELLOW}    user: 12345   password: 12345${CLR_RESET}"
+
+echo -e "${CLR_ORANGE}При перезагрузке  возможно зависание роутера!${CLR_RESET}"
+echo -e "${CLR_ORANGE}Перезапустите роутер отключив и подав питание.${CLR_RESET}"
+echo 
 echo -e "${CLR_GREEN}================================================================${CLR_RESET}"
 
 confirm_reboot_or_die 1
