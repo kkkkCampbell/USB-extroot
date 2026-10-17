@@ -272,8 +272,8 @@ confirm_reboot_or_die() {
     [ "$need_share_down" = "1" ] && share_down
 
     echo "Перезагружаюсь..."
-	echo -e "${CLR_ORANGE}При перезагрузке  возможно зависание роутера!"
-	echo -e "Перезапустите роутер отключив и подав питание.${CLR_RESET}"
+	echo -e "${CLR_ORANGE}    При перезагрузке  возможно зависание роутера!"
+	echo -e "    Перезапустите роутер отключив и подав питание.${CLR_RESET}"
     sync
     sleep 2
     soft_reboot_with_fallback 40
@@ -1126,7 +1126,7 @@ mount_removable_all() {
         echo "        dmesg | tail -15:"
         dmesg 2>/dev/null | tail -15
     elif [ "$any" = "0" ]; then
-        echo "      (найдено $found, все уже смонтированы или не содержат распознанной ФС)"
+        echo "      (найдено $found, все уже смонтированы, или не содержат распознанной ФС)"
     fi
     return 0
 }
@@ -2018,9 +2018,9 @@ echo
 echo -e "${CLR_GREEN} Готово. Бэкап: $BACKUP_ARCHIVE${CLR_RESET}"
 echo -e "${CLR_YELLOW}    Доступ к бэкапу по локальной сети: \\\\\\\\$(get_router_ip)\\overlaybackup${CLR_RESET}"
 echo -e "${CLR_YELLOW}    user: 12345   password: 12345${CLR_RESET}"
-
-echo -e "${CLR_ORANGE}При перезагрузке  возможно зависание роутера!${CLR_RESET}"
-echo -e "${CLR_ORANGE}Перезапустите роутер отключив и подав питание.${CLR_RESET}"
+echo
+echo -e "${CLR_ORANGE}    При перезагрузке  возможно зависание роутера!${CLR_RESET}"
+echo -e "${CLR_ORANGE}    Перезапустите роутер отключив и подав питание.${CLR_RESET}"
 echo 
 echo -e "${CLR_GREEN}================================================================${CLR_RESET}"
 
