@@ -54,6 +54,22 @@ PKG_REPAIR_SVC_STOPPED=0
 have() { command -v "$1" >/dev/null 2>&1; }
 
 # ------------------------------------------------------------
+#  Универсальный пакетный менеджер
+# ------------------------------------------------------------
+opkg_cmd="opkg"
+pkg_install_cmd="install"
+pkg_update_cmd="update"
+if have apk; then
+    opkg_cmd="apk"
+    pkg_install_cmd="add"
+fi
+
+# ------------------------------------------------------------
+#  Полный список необходимых пакетов — ОДИН
+# ------------------------------------------------------------
+WANT_PKGS="block-mount uci tar e2fsprogs kmod-usb-storage kmod-usb-storage-uas kmod-fs-vfat kmod-fs-exfat kmod-fs-ext4"
+
+# ------------------------------------------------------------
 #  fs доступен ядру? (builtin, загружен или установлен модулем)
 # ------------------------------------------------------------
 fs_in_kernel() {
@@ -66,11 +82,17 @@ fs_in_kernel() {
 ext4_in_kernel() { fs_in_kernel ext4; }
 
 # ------------------------------------------------------------
-#  usb-storage загружен или установлен?
+#  usb-storage / uas загружены или установлены?
 # ------------------------------------------------------------
 usb_storage_in_kernel() {
-    lsmod 2>/dev/null | grep -qE '^(usb_storage|uas)[[:space:]]' && return 0
-    find "/lib/modules/$(uname -r)" \( -name 'usb-storage.ko*' -o -name 'uas.ko*' \) 2>/dev/null | grep -q . && return 0
+    lsmod 2>/dev/null | grep -q '^usb_storage[[:space:]]' && return 0
+    find "/lib/modules/$(uname -r)" -name 'usb-storage.ko*' 2>/dev/null | grep -q . && return 0
+    return 1
+}
+
+uas_in_kernel() {
+    lsmod 2>/dev/null | grep -q '^uas[[:space:]]' && return 0
+    find "/lib/modules/$(uname -r)" -name 'uas.ko*' 2>/dev/null | grep -q . && return 0
     return 1
 }
 
@@ -92,16 +114,17 @@ tar_is_full() {
 # ------------------------------------------------------------
 pkg_present() {
     case "$1" in
-        block-mount)      have block ;;
-        uci)              have uci ;;
-        tar)              tar_is_full ;;
-        e2fsprogs)        have mkfs.ext4 ;;
-        kmod-fs-ext4)     fs_in_kernel ext4 ;;
-        kmod-fs-vfat)     fs_in_kernel vfat ;;
-        kmod-fs-exfat)    fs_in_kernel exfat ;;
-        kmod-usb-storage) usb_storage_in_kernel ;;
-        wget-ssl)         have wget ;;
-        *)                return 1 ;;
+        block-mount)          have block ;;
+        uci)                  have uci ;;
+        tar)                  tar_is_full ;;
+        e2fsprogs)            have mkfs.ext4 ;;
+        kmod-fs-ext4)         fs_in_kernel ext4 ;;
+        kmod-fs-vfat)         fs_in_kernel vfat ;;
+        kmod-fs-exfat)        fs_in_kernel exfat ;;
+        kmod-usb-storage)     usb_storage_in_kernel ;;
+        kmod-usb-storage-uas) uas_in_kernel ;;
+        wget-ssl)             have wget ;;
+        *)                    return 1 ;;
     esac
 }
 
@@ -213,7 +236,9 @@ pkg_repair_finish() {
 # ============================================================
 soft_reboot_with_fallback() {
 
-
+sync
+sleep 3
+echo b > /proc/sysrq-trigger # For testing purposes
 reboot -f # For testing purposes
 
 
@@ -559,154 +584,25 @@ storage_quick_check() {
 }
 
 # ------------------------------------------------------------
-#  Батч-установка (один вызов pm)
+#  Один цикл: проверить и доустановить недостающее.
 # ------------------------------------------------------------
-install_pkgs() {
-    local pm="$1" pkgs="$2"
-    [ -n "$pkgs" ] || return 0
-    case "$pm" in
-        apk)  apk add $pkgs ;;
-        opkg) opkg install $pkgs ;;
-        *)    return 1 ;;
-    esac
-}
-
-# ------------------------------------------------------------
-#  Проверить и, при необходимости, доустановить зависимости.
-#  $1 — наборы через пробел: "base" | "ext4" | "removable" | ...
-#  $2 — режим: install (по умолчанию) | check
-# ------------------------------------------------------------
-deps_ensure() {
-    local sets="$1" mode="${2:-install}"
-    local want="" missing="" p still soft=0
-
-    case " $sets " in
-        *" base "*)      want="$want block-mount uci tar" ;;
-    esac
-    case " $sets " in
-        *" ext4 "*)      want="$want e2fsprogs kmod-fs-ext4" ;;
-    esac
-    case " $sets " in
-        *" removable "*) want="$want kmod-usb-storage kmod-fs-vfat kmod-fs-exfat kmod-fs-ext4"
-                         soft=1 ;;
-    esac
-    case " $sets " in
-        *" base "*)
-            if ! have wget && ! have curl; then
-                want="$want wget-ssl"
-            fi
-            ;;
-    esac
-
-    for p in $want; do
+pkg_ensure() {
+    local missing="" p
+    for p in $WANT_PKGS; do
         pkg_present "$p" || missing="$missing $p"
     done
     missing=$(echo "$missing" | sed 's/^ *//; s/ *$//')
-    DEPS_LAST_MISSING="$missing"
-
     if [ -z "$missing" ]; then
         echo "      все зависимости на месте"
         return 0
     fi
-
-    if [ "$mode" = "check" ]; then
-        echo "      отсутствуют (будут установлены): $missing"
+    echo "      доустанавливаю: $missing"
+    $opkg_cmd $pkg_update_cmd >/dev/null 2>&1 || true
+    if ! $opkg_cmd $pkg_install_cmd $missing >/dev/null 2>&1; then
+        echo -e "${CLR_ORANGE}      установка не удалась${CLR_RESET}"
         return 1
     fi
-
-    echo "      отсутствуют: $missing"
-    echo "      устанавливаю..."
-
-    case "$PM" in
-        opkg) opkg update >/dev/null 2>&1 ;;
-        apk)  apk update  >/dev/null 2>&1 ;;
-    esac
-
-    if [ "$soft" = "1" ]; then
-        local failed=""
-        for p in $missing; do
-            if install_pkgs "$PM" "$p" >/dev/null 2>&1 && pkg_present "$p"; then
-                :
-            else
-                failed="$failed $p"
-            fi
-        done
-        failed=$(echo "$failed" | sed 's/^ *//; s/ *$//')
-        if [ -n "$failed" ]; then
-            echo -e "${CLR_ORANGE}      не поставлены (пропускаю): $failed${CLR_RESET}"
-        fi
-        DEPS_LAST_MISSING="$failed"
-        return 0
-    fi
-
-    if install_pkgs "$PM" "$missing"; then
-        still=""
-        for p in $missing; do
-            pkg_present "$p" || still="$still $p"
-        done
-        still=$(echo "$still" | sed 's/^ *//; s/ *$//')
-        if [ -z "$still" ]; then
-            echo "      установлено: $missing"
-            DEPS_LAST_MISSING=""
-            return 0
-        fi
-        echo "      после установки всё ещё отсутствуют: $still"
-        DEPS_LAST_MISSING="$still"
-    fi
-
-    echo
-    echo -e "${CLR_ORANGE}############################################################${CLR_RESET}"
-    echo -e "${CLR_ORANGE}#  УСТАНОВКА ЧЕРЕЗ ОСНОВНУЮ СЕТЬ НЕ УДАЛАСЬ${CLR_RESET}"
-    echo -e "${CLR_ORANGE}############################################################${CLR_RESET}"
-    echo
-    echo "Сейчас будет временно изменён DNS и остановлены сервисы"
-    echo "обхода блокировок (zapret, youtubeUnblock и т.п.) на"
-    echo "время установки пакетов."
-    echo
-    echo -e "${CLR_YELLOW}Если вы подключены по кабелю (Ethernet):${CLR_RESET}"
-    echo -e "${CLR_YELLOW}  связь может прерваться, и вы не увидите дальнейший вывод.${CLR_RESET}"
-    echo -e "${CLR_YELLOW}  Это нормально. Ждите 3–5 минут.${CLR_RESET}"
-    echo -e "${CLR_YELLOW}  Если через 5 минут связь не вернётся — перезагрузите роутер.${CLR_RESET}"
-    echo -e "${CLR_YELLOW}  Всё будет в порядке.${CLR_RESET}"
-    echo
-    echo "Если подключены по Wi-Fi — вывод останется на экране."
-    echo
-    printf "Продолжить? (y/N): "
-    read a
-    case "$a" in
-        y|Y|yes|YES) ;;
-        *)
-            echo "Отменено. Установите пакеты вручную и запустите скрипт заново:"
-            echo "  $PM update"
-            echo "  $PM add $missing"
-            exit 0
-            ;;
-    esac
-
-    echo "      пробую через альтернативный DNS..."
-    pkg_repair_start || echo "      сеть не тронута (нечего чинить)"
-
-    if ! install_pkgs "$PM" "$missing"; then
-        pkg_repair_finish
-        echo -e "${CLR_ORANGE}Установка не удалась даже после ремонта сети${CLR_RESET}"
-        return 1
-    fi
-
-    still=""
-    for p in $missing; do
-        pkg_present "$p" || still="$still $p"
-    done
-    still=$(echo "$still" | sed 's/^ *//; s/ *$//')
-    if [ -n "$still" ]; then
-        pkg_repair_finish
-        echo -e "${CLR_ORANGE}После установки всё ещё отсутствуют: $still${CLR_RESET}"
-        DEPS_LAST_MISSING="$still"
-        return 1
-    fi
-
-    echo "      восстанавливаю сеть..."
-    pkg_repair_finish
-    DEPS_LAST_MISSING=""
+    echo -e "${CLR_GREEN}      установлено${CLR_RESET}"
     return 0
 }
 
@@ -716,23 +612,21 @@ stage0_deps() {
     echo
     STAGE0="[0/9] зависимости"
     echo "$STAGE0 ..."
-    PM=$(detect_pm)
-    echo "      менеджер пакетов: $PM"
+    echo "      менеджер пакетов: $opkg_cmd"
 
-    if ! deps_ensure base "$mode"; then
+    if ! pkg_ensure; then
         if [ "$mode" = "check" ]; then
+            echo -e "${CLR_ORANGE}      часть зависимостей недоступна — продолжаю${CLR_RESET}"
             return 0
         fi
-        die "$STAGE0" "Базовые зависимости не установлены.
+        die "$STAGE0" "Зависимости отсутствуют.
 
 Проверь вручную:
-  $PM update
-  $PM add ${DEPS_LAST_MISSING:-block-mount uci tar}
-
-Если что-то недоступно в фиде — поставь вручную и запусти скрипт заново."
+  $opkg_cmd $pkg_update_cmd
+  $opkg_cmd $pkg_install_cmd $WANT_PKGS"
     fi
     echo -e "${CLR_GREEN}      tar: $(tar --version 2>&1 | head -1)${CLR_RESET}"
-    echo -e "${CLR_GREEN}      базовые зависимости на месте${CLR_RESET}"
+    echo -e "${CLR_GREEN}      зависимости на месте${CLR_RESET}"
 }
 
 stage1_overlay() {
@@ -1034,10 +928,11 @@ mount_removable_all() {
 
     any=0
     found=0
+    flash=""
 
     # 1. modprobe всех релевантных драйверов (no-op если уже загружены).
     #    Решает случай: пакет установлен в этом же запуске, .ko есть,
-    #    но kmodloader успел подгрузить модуль уже после deps_ensure.
+    #    но kmodloader успел подгрузить модуль уже после pkg_ensure.
     if have modprobe; then
         modprobe usb-storage 2>/dev/null || modprobe usb_storage 2>/dev/null || true
         modprobe uas 2>/dev/null || true
@@ -1047,8 +942,7 @@ mount_removable_all() {
     fi
 
     # 2. Если в /sys есть USB-интерфейс класса 08 (mass storage) —
-    #    подождать появления /dev/sd? до 10 сек. Иначе sda может
-    #    появиться уже после того, как мы прошли этот цикл.
+    #    подождать появления /dev/sd? до 10 сек.
     usb_ms=0
     for _u in /sys/bus/usb/devices/*:*/bInterfaceClass; do
         [ -f "$_u" ] || continue
@@ -1103,10 +997,10 @@ mount_removable_all() {
     done
 
     if [ "$found" = "0" ]; then
+        flash="no"
         echo "      (съёмных накопителей не обнаружено)"
         echo "        /dev:"
         listed=0
-		flash="no"
         for d in /dev/sd? /dev/mmcblk?; do
             [ -b "$d" ] || continue
             b=$(basename "$d")
@@ -1125,27 +1019,25 @@ mount_removable_all() {
 
         echo "        dmesg | tail -15:"
         dmesg 2>/dev/null | tail -15
-    elif [ "$any" = "0" ]; then
-        echo "      (найдено $found, все уже смонтированы, или не содержат распознанной ФС)"
+    else
+        flash="yes"
+        [ "$any" = "0" ] && echo "      (найдено $found, все уже смонтированы, или не содержат распознанной ФС)"
     fi
     return 0
 }
 
 load_dependencies
 
-PM=$(detect_pm)
-deps_ensure "removable" install
+pkg_ensure
 
 echo
 echo "Монтирую съёмные накопители..."
 mount_removable_all
-echo "$flash"
 if [ "$flash" = "no" ]; then
-	echo -e "${CLR_ORANGE}НАКОПИТЕЛИ НЕ ОБНАРУЖЕНЫ!"
-	echo -e "ПОДКЛЮЧИТЕ ФЛЭШКУ И ПЕРЕЗАПУСТИТЕ СКРИПТ${CLR_RESET}"
+	echo -e "${CLR_ORANGE}НАКОПИТЕЛИ НЕ ОБНАРУЖЕНЫ!${CLR_RESET}"
+	echo -e "${CLR_ORANGE}ПОДКЛЮЧИТЕ ФЛЭШКУ И ПЕРЕЗАПУСТИТЕ СКРИПТ${CLR_RESET}"
 	exit 1
 fi
-sleep 3
 
 # ============================================================
 #  МЕНЮ
@@ -1380,7 +1272,7 @@ $UBI_DEV
     cat > "$UBI_MNT/upper/root/reboot_after.sh" <<'EOF'
 #!/bin/sh
 # RESTORE
-WAIT_BEFORE_REBOOT=10
+WAIT_BEFORE_REBOOT=20
 rm -f /root/reboot_after.sh
 uci -q delete ksmbd.overlaybackup
 uci -q commit ksmbd
@@ -1581,21 +1473,12 @@ fi
 echo -e "Подтверждено: ${CLR_YELLOW}$TARGET ($MODE)${CLR_RESET}."
 
 # ============================================================
-#  ШАГ 5. Пакеты
+#  ШАГ 5. Пакеты — установлены до меню
 # ============================================================
 echo
 STAGE5="[5/9] пакеты"
 echo "$STAGE5 ..."
-
-if ! deps_ensure "base ext4" install; then
-    die "$STAGE5" "Не удалось установить зависимости: ${DEPS_LAST_MISSING:-<неизвестно>}
-
-Проверь вручную:
-  $PM update
-  $PM add ${DEPS_LAST_MISSING:-block-mount uci tar e2fsprogs kmod-fs-ext4}"
-fi
-
-echo -e "${CLR_GREEN}      пакеты на месте${CLR_RESET}"
+echo -e "${CLR_GREEN}      все пакеты установлены ранее${CLR_RESET}"
 
 # ============================================================
 #  ШАГ 6. Staging
@@ -1961,7 +1844,7 @@ cp /tmp/usb-extroot.log "$MNT/upper/root/usb-extroot.log" 2>/dev/null || true
 cat > "$REBOOT_HELPER" <<'EOF'
 #!/bin/sh
 # MAIN
-WAIT_BEFORE_REBOOT=10
+WAIT_BEFORE_REBOOT=20
 
 rm -f /root/reboot_after.sh
 uci -q delete ksmbd.overlaybackup
