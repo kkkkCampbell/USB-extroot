@@ -1516,7 +1516,7 @@ else
     echo "Действие: удаление overlay-структуры на $PART (upper/, work/, .fs_state)"
 fi
 echo
-echo - e "Для подтверждения ${CLR_ORANGE}УНИЧТОЖЕНИЯ ДАННЫХ НА НАКОПИТЕЛЕ${CLR_RESET} введите число::"
+echo -e "Для подтверждения ${CLR_ORANGE}УНИЧТОЖЕНИЯ ДАННЫХ НА НАКОПИТЕЛЕ${CLR_RESET} введите число::"
 echo
 echo -e "        ${CLR_YELLOW}${CONFIRM_CODE}${CLR_RESET}"
 echo
