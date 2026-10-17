@@ -176,7 +176,7 @@ switch_overlay_apply() {
         cat > "$ubi_mnt/upper/root/reboot_after.sh" <<'EOF'
 #!/bin/sh
 # SWITCH-TO-INTERNAL
-WAIT_BEFORE_REBOOT=10
+WAIT_BEFORE_REBOOT=20
 
 rm -f /root/reboot_after.sh
 uci -q delete ksmbd.overlaybackup
