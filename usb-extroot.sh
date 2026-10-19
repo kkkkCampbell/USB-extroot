@@ -1,6 +1,6 @@
 #!/bin/sh
 # ============================================================
-#  usb-extroot.sh  v0.1.18
+#  usb-extroot.sh  v0.1.19
 #  Перенос overlay OpenWrt на USB-накопитель (extroot)
 #  Лог: /tmp/usb-extroot.log (сброс в overlay в конце)
 #  Бэкап: /tmp/.usb-extroot-x7k2m9q4p1w8/ (tmpfs, RAM)
@@ -25,7 +25,7 @@ case "$0" in
         ;;
 esac
 
-ver="v0.1.18"
+ver="v0.1.19"
 
 CLR_RESET="\033[0m"
 CLR_GREEN="\033[32m"
@@ -1439,33 +1439,35 @@ echo -e "${CLR_GREEN}      структура overlay корректна${CLR_RE
 echo "      физ.диски: overlay=$SKIP_PARENT usb=$(parent_dev "$PART")"
 
 echo
+
+
+CONFIRM_CODE=$(tr -dc '0-9' < /dev/urandom 2>/dev/null | head -c 4)
+
+echo
+echo -e "      ${CLR_ORANGE}############################################${CLR_RESET}"
+echo -e "      ${CLR_ORANGE}#      ВНИМАНИЕ: НЕОБРАТИМАЯ ОПЕРАЦИЯ!     #${CLR_RESET}"
+echo -e "      ${CLR_ORANGE}############################################${CLR_RESET}"
+echo
 if [ "$MODE" = format ]; then
-    echo -e "${CLR_ORANGE}Все данные на $DESC будут уничтожены (mkfs.ext4 $PART).${CLR_RESET}"
+    echo -e "${CLR_ORANGE}Все данные на $DESCбудут уничтожены!${CLR_RESET}"
 else
     echo -e "${CLR_YELLOW}На $PART будет удалена только overlay-структура (upper/, work/, .fs_state),${CLR_RESET}"
     echo -e "${CLR_YELLOW}остальные данные не тронуты. Затем будет развёрнут overlay.${CLR_RESET}"
 fi
 
-CONFIRM_CODE=$(tr -dc '0-9' < /dev/urandom 2>/dev/null | head -c 4)
-
-echo
-echo -e "${CLR_ORANGE}############################################################${CLR_RESET}"
-echo -e "${CLR_ORANGE}#  ВНИМАНИЕ: НЕОБРАТИМАЯ ОПЕРАЦИЯ${CLR_RESET}"
-echo -e "${CLR_ORANGE}############################################################${CLR_RESET}"
 echo
 echo "Сейчас будет уничтожен накопитель:"
 echo -e "    ${CLR_YELLOW}$DESC${CLR_RESET}"
 echo -e "    раздел: ${CLR_YELLOW}$PART${CLR_RESET}"
 echo
 if [ "$MODE" = format ]; then
-    echo "Действие: mkfs.ext4 -F $PART"
+    echo -e "Действие: ${CLR_ORANGE}ФОРМАТИРОВАНИЕ${CLR_RESET} mkfs.ext4 -F $PART"
 else
-    echo "Действие: удаление overlay-структуры на $PART (upper/, work/, .fs_state)"
+    echo -e "Действие: ${CLR_ORANGE}удаление overlay-структуры на $PART${CLR_RESET} (upper/, work/, .fs_state)"
 fi
 echo
-echo -e "Для подтверждения ${CLR_ORANGE}УНИЧТОЖЕНИЯ ДАННЫХ НА НАКОПИТЕЛЕ${CLR_RESET} введите число:"
-echo
-echo -e "        ${CLR_YELLOW}${CONFIRM_CODE}${CLR_RESET}"
+printf "Для подтверждения ${CLR_ORANGE}УНИЧТОЖЕНИЯ ДАННЫХ НА НАКОПИТЕЛЕ${CLR_RESET} введите число:"
+printf " ${CLR_YELLOW}${CONFIRM_CODE}${CLR_RESET}"
 echo
 printf "Число (Enter — отмена): "
 read A
