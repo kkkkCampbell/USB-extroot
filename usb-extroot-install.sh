@@ -550,7 +550,7 @@ return view.extend({
 
         return E([], [
             E('h2', {}, 'USB extroot'),
-            E('p', {}, 'Перенос overlay OpenWrt на USB-накопитель. Скрипт запускается ТОЛЬКО по кнопкам.'),
+            E('p', {}, 'Перенос overlay OpenWrt на USB-накопитель.'),
             controls,
             E('h3', {}, 'Журнал выполнения'),
             logPre
