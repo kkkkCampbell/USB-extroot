@@ -1,6 +1,6 @@
-	#!/bin/sh
+#!/bin/sh
 	# ============================================================
-	#  usb-extroot.sh  v0.1.21-draft
+	#  usb-extroot.sh  v0.1.24-draft
 	#  Перенос overlay OpenWrt на USB-накопитель (extroot)
 	#  Лог: /tmp/usb-extroot.log
 	#  Бэкап: /tmp/.usb-extroot-x7k2m9q4p1w8/
@@ -8,10 +8,10 @@
 	#  sh <( wget -qO- https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft/usb-extroot-install.sh )
 	# 
 	# ============================================================
-	ver="vv0.1.21-draft"
+	ver="v0.1.21-draft"
 
 	# ------------------------------------------------------------
-	#  1. САМОЕ ПЕРВОЕ: Парсинг аргументов.
+	#  1. Парсинг аргументов.
 	# ------------------------------------------------------------
 	BATCH=0
 	BATCH_MODE=""
@@ -41,7 +41,7 @@
 	# ------------------------------------------------------------
 	#  МГНОВЕННАЯ ИНИЦИАЛИЗАЦИЯ PID И ЛОГА
 	# ------------------------------------------------------------
-	PID_FILE=/var/run/usb-extroot.pid
+	PID_FILE=/tmp/usb-extroot.pid
 	LOG=/tmp/usb-extroot.log
 
 	if [ "$BATCH" = "1" ] && [ -z "$BATCH_ACTION" ]; then
@@ -1201,7 +1201,7 @@
 			fi
 			echo "============================================================"
 			echo "usb-extroot.sh  ${ver}"
-			cat <<'BANNER'
+cat <<-'BANNER'
 	Перенос overlay OpenWrt на USB-накопитель (extroot)
 	------------------------------------------------------------
 	 До ввода YES — только чтение.
@@ -1424,7 +1424,7 @@
 
 		mkdir -p "$UBI_MNT/upper/root"
 
-		cat > "$UBI_MNT/upper/root/reboot_after.sh" <<'EOF'
+		cat > "$UBI_MNT/upper/root/reboot_after.sh" <<-'EOF'
 	#!/bin/sh
 	# RESTORE
 	WAIT_BEFORE_REBOOT=20
@@ -1461,7 +1461,7 @@
 	sleep 1
 	reboot
 
-	EOF
+EOF
 		chmod +x "$UBI_MNT/upper/root/reboot_after.sh"
 
 		mkdir -p "$UBI_MNT/upper/etc"
@@ -1990,7 +1990,6 @@ fi
 	uci -c "$CFG" commit fstab
 
 	echo -e "      extroot: UUID=${CLR_YELLOW}$UUID${CLR_RESET} -> /overlay"
-
 	echo "Проверка живого fstab:"
 	uci show fstab 2>/dev/null | grep -E 'extroot' || echo "      (extroot не найден!)"
 
@@ -2001,13 +2000,12 @@ fi
 	#  ПОДГОТОВКА ДВОЙНОГО РЕБУТА
 	# ============================================================
 	REBOOT_HELPER="$MNT/upper/root/reboot_after.sh"
-
 	mkdir -p "$MNT/upper/root"
 
 	sleep 1; sync
 	cp /tmp/usb-extroot.log "$MNT/upper/root/usb-extroot.log" 2>/dev/null || true
 
-	cat > "$REBOOT_HELPER" <<'EOF'
+	cat > "$REBOOT_HELPER" <<-'EOF'
 	#!/bin/sh
 	# MAIN
 	WAIT_BEFORE_REBOOT=20
@@ -2046,9 +2044,8 @@ fi
 	sleep 1
 	reboot
 
-	EOF
+EOF
 	chmod +x "$REBOOT_HELPER"
-
 	if [ ! -f "$MNT/upper/etc/rc.local" ]; then
 		printf '#!/bin/sh\n# Put your custom commands here that should be executed once\n# the system init finished. By default this file does nothing.\n\nexit 0\n' > "$MNT/upper/etc/rc.local"
 	fi
@@ -2061,13 +2058,17 @@ fi
 	umount "$MNT" 2>/dev/null || true
 	rm -rf "$STAGE_DIR" 2>/dev/null || true
 
-	echo
 	echo -e "${CLR_GREEN}================================================================${CLR_RESET}"
 	echo
-	echo -e "${CLR_GREEN} Готово. Бэкап: $BACKUP_ARCHIVE${CLR_RESET}"
-	echo -e "${CLR_YELLOW}    Доступ к бэкапу по локальной сети: \\\\\\\\$(get_router_ip)\\overlaybackup${CLR_RESET}"
-	echo -e "${CLR_YELLOW}    user: 12345   password: 12345${CLR_RESET}"
-	echo
+
+	if [ "$BATCH" != "1" ]; then
+		echo -e "${CLR_GREEN} Готово. 
+ Бэкап: 
+	      $BACKUP_ARCHIVE${CLR_RESET}"
+		echo -e "${CLR_YELLOW}    Доступ к бэкапу по локальной сети: \\\\\\\\$(get_router_ip)\\overlaybackup${CLR_RESET}"
+		echo -e "${CLR_YELLOW}    user: 12345   password: 12345${CLR_RESET}"
+		echo
+	fi
 	echo -e "${CLR_ORANGE}    При перезагрузке  возможно зависание роутера!${CLR_RESET}"
 	echo -e "${CLR_ORANGE}    Перезапустите роутер отключив и подав питание.${CLR_RESET}"
 	echo
