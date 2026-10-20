@@ -3,7 +3,7 @@
 #  usb-extroot-install.sh  — установщик usb-extroot + веб-морда
 #  sh <( wget -qO- https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft/usb-extroot-install.sh )
 # ============================================================
-TEST_MODE=0
+TEST_MODE=1
 BASE_DIR="/opt/usb-extroot"
 
 if [ "$(id -u)" != "0" ]; then
@@ -394,7 +394,7 @@ return view.extend({
         ]);
 
         var modeSelect = E('select', { 'id': 'usb-extroot-mode', 'style': 'width:100%;padding:4px;' }, [
-            E('option', { 'value': '' }, '— ВЫБЕРИТЕ ДЕЙСТВИЕ —'),
+            E('option', { 'value': '' }, '— ВЫБЕРИТЕ ВАРИАНТ ПЕРЕНОСА ДАННЫХ —'),
             E('option', { 'value': 'format' }, 'С форматированием (mkfs.ext4)'),
             E('option', { 'value': 'noformat' }, 'Без форматирования (только overlay-структура)')
         ]);
