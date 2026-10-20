@@ -3,7 +3,7 @@
 #  usb-extroot-install.sh  — установщик usb-extroot + веб-морда
 #  sh <( wget -qO- https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft/usb-extroot-install.sh )
 # ============================================================
-TEST_MODE=0
+TEST_MODE=1
 BASE_DIR="/opt/usb-extroot"
 
 if [ "$(id -u)" != "0" ]; then
@@ -85,6 +85,28 @@ run_script_action() {
     fi
     echo "$out"
     return 0
+}
+
+method_version() {
+    local v="" tmp="/tmp/usb-extroot.ver.$$" p w
+    if [ -x "$SCRIPT" ]; then
+        if command -v timeout >/dev/null 2>&1; then
+            timeout -s KILL 10 "$SCRIPT" --version >"$tmp" 2>/dev/null
+        else
+            # запасной вариант без timeout: сторож убивает процесс через 10 с
+            "$SCRIPT" --version >"$tmp" 2>/dev/null &
+            p=$!
+            ( sleep 10; kill -9 "$p" 2>/dev/null ) &
+            w=$!
+            wait "$p" 2>/dev/null
+            kill "$w" 2>/dev/null
+        fi
+        [ -s "$tmp" ] && v=$(head -n1 "$tmp")
+        rm -f "$tmp"
+    fi
+    printf '{ "result": { "version": '
+    printf '%s' "$v" | esc_json
+    printf ' } }\n'
 }
 
 method_status() {
@@ -256,7 +278,7 @@ method_run() {
 
 case "$1" in
     list)
-        echo '{ "status": {}, "devices": {}, "log": { "offset": 0 }, "archive_info": {}, "run": { "params": {} } }'
+        echo '{ "status": {}, "devices": {}, "log": { "offset": 0 }, "archive_info": {}, "version": {}, "run": { "params": {} } }'
         ;;
     call)
         method="$2"
@@ -265,6 +287,7 @@ case "$1" in
             devices)      method_devices ;;
             log)          method_log ;;
             archive_info) method_archive_info ;;
+            version)      method_version ;;
             run)          method_run ;;
             *) echo '{ "error": "unknown method" }' ;;
         esac
@@ -284,7 +307,7 @@ cat > "$BASE_DIR/acl.json" <<'ACL_EOF'
         "description": "USB extroot management",
         "read": {
             "ubus": {
-                "luci.usb-extroot": [ "status", "devices", "log", "archive_info" ]
+                "luci.usb-extroot": [ "status", "devices", "log", "archive_info", "version" ]
             }
         },
         "write": {
@@ -329,6 +352,7 @@ var callStatus = rpc.declare({ object: 'luci.usb-extroot', method: 'status' });
 var callDevices = rpc.declare({ object: 'luci.usb-extroot', method: 'devices' });
 var callLog = rpc.declare({ object: 'luci.usb-extroot', method: 'log' });
 var callArchiveInfo = rpc.declare({ object: 'luci.usb-extroot', method: 'archive_info' });
+var callVersion = rpc.declare({ object: 'luci.usb-extroot', method: 'version' });
 var callRun = rpc.declare({ object: 'luci.usb-extroot', method: 'run', params: [ 'mode', 'device', 'confirm' ] });
 
 var pollTimer = null;
@@ -353,11 +377,12 @@ function genConfirmCode() {
 
 return view.extend({
     load: function() {
-        return Promise.resolve();
+        return callVersion().catch(function() { return null; });
     },
 
-    render: function() {
+    render: function(verRes) {
         var self = this;
+        var ver = (unwrap(verRes) || {}).version || '';
 
         var logPre = E('pre', {
             'id': 'usb-extroot-log',
@@ -526,7 +551,12 @@ return view.extend({
         ]);
 
         return E([], [
-            E('h2', {}, 'USB extroot'),
+            E('h2', {}, [
+                'USB extroot',
+                ver ? E('span', {
+                    'style': 'margin-left:12px;font-size:14px;font-weight:normal;color:#888;'
+                }, ver) : ''
+            ]),
             E('p', {}, 'Перенос overlay OpenWrt на USB-накопитель.'),
             controls,
             E('h3', {}, 'Журнал выполнения'),
