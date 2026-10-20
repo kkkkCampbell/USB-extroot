@@ -1,9 +1,8 @@
 #!/bin/sh
 # ============================================================
 #  usb-extroot-install.sh  — установщик usb-extroot + веб-морда
+#  sh <( wget -qO- https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft/usb-extroot-install.sh )
 # ============================================================
-clear
-echo
 TEST_MODE=0
 BASE_DIR="/opt/usb-extroot"
 
@@ -15,7 +14,7 @@ fi
 mkdir -p "$BASE_DIR"
 
 if [ "$TEST_MODE" != "1" ]; then
-	SRC="https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft/"
+	SRC="https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/main"
 	echo "==> Скачиваю usb-extroot.sh..."
 	if ! wget -qO "$BASE_DIR/usb-extroot.sh" "$SRC/usb-extroot.sh"; then
 		if ! curl -fsSL "$SRC/usb-extroot.sh" -o "$BASE_DIR/usb-extroot.sh"; then
@@ -41,7 +40,7 @@ cat > "$BASE_DIR/luci.usb-extroot" <<'RPCD_EOF'
 
 SCRIPT=/opt/usb-extroot/usb-extroot.sh
 LOG=/tmp/usb-extroot.log
-PID_FILE=/var/run/usb-extroot.pid
+PID_FILE=/tmp/usb-extroot.pid
 
 esc_json() {
     awk 'BEGIN{printf "\""} {gsub(/\\/,"\\\\");gsub(/"/,"\\\"");gsub(/\t/,"\\t");if(NR>1)printf "\\n";printf "%s",$0} END{printf "\""}'
@@ -143,8 +142,6 @@ method_devices() {
     printf '] }\n'
 }
 
-
-
 method_log() {
     local chunk=""
     [ -f "$LOG" ] && chunk=$(cat "$LOG" 2>/dev/null)
@@ -152,8 +149,6 @@ method_log() {
     printf '%s' "$chunk" | esc_json
     printf ' } }\n'
 }
-
-
 
 method_archive_info() {
     local out
@@ -235,9 +230,9 @@ method_run() {
     rm -f "$PID_FILE"
     
     if [ -n "$device" ]; then
-        setsid "$SCRIPT" --batch --mode="$mode" --device="$device" --confirm=yes >>"$LOG" 2>&1 &
+        setsid sh "$SCRIPT" --batch --mode="$mode" --device="$device" --confirm=yes >>"$LOG" 2>&1 &
     else
-        setsid "$SCRIPT" --batch --mode="$mode" --confirm=yes >>"$LOG" 2>&1 &
+        setsid sh "$SCRIPT" --batch --mode="$mode" --confirm=yes >>"$LOG" 2>&1 &
     fi
     
     local i=0
@@ -247,7 +242,7 @@ method_run() {
             pid=$(cat "$PID_FILE" 2>/dev/null)
             [ -n "$pid" ] && break
         fi
-        sleep 0.5
+        sleep 1
         i=$((i + 1))
     done
 
@@ -268,7 +263,7 @@ case "$1" in
         case "$method" in
             status)       method_status ;;
             devices)      method_devices ;;
-            log)          read params_json; method_log "${offset:-0}" ;;
+            log)          method_log ;;
             archive_info) method_archive_info ;;
             run)          method_run ;;
             *) echo '{ "error": "unknown method" }' ;;
@@ -332,7 +327,7 @@ cat > "$BASE_DIR/main.js" <<'VIEW_EOF'
 
 var callStatus = rpc.declare({ object: 'luci.usb-extroot', method: 'status' });
 var callDevices = rpc.declare({ object: 'luci.usb-extroot', method: 'devices' });
-var callLog = rpc.declare({ object: 'luci.usb-extroot', method: 'log', params: [ 'offset' ] });
+var callLog = rpc.declare({ object: 'luci.usb-extroot', method: 'log' });
 var callArchiveInfo = rpc.declare({ object: 'luci.usb-extroot', method: 'archive_info' });
 var callRun = rpc.declare({ object: 'luci.usb-extroot', method: 'run', params: [ 'mode', 'device', 'confirm' ] });
 
@@ -363,14 +358,14 @@ return view.extend({
 
     render: function() {
         var self = this;
-        
+
         var logPre = E('pre', {
             'id': 'usb-extroot-log',
             'style': 'background:#111;color:#ccc;padding:10px;height:400px;overflow:auto;font-family:monospace;font-size:12px;white-space:pre-wrap;border:1px solid #444;margin-top:10px;'
         }, '');
 
         var deviceSelect = E('select', { 'id': 'usb-extroot-device', 'style': 'width:100%;padding:4px;' }, [
-            E('option', { 'value': '' }, '— нажмите "Обновить список" —')
+            E('option', { 'value': '' }, '— нажмите "Получить состояние" —')
         ]);
 
         var modeSelect = E('select', { 'id': 'usb-extroot-mode', 'style': 'width:100%;padding:4px;' }, [
@@ -433,13 +428,13 @@ return view.extend({
             var btnRestoreEl = document.getElementById('btn-restore');
             var hintEl = document.getElementById('usb-extroot-hint');
 
-            var extrootStr = isExtroot 
-                ? 'Используется накопитель ' + (status.extroot_desc || curDev) 
+            var extrootStr = isExtroot
+                ? 'Используется накопитель ' + (status.extroot_desc || curDev)
                 : 'Используется внутренний накопитель роутера';
             var errStr = isFallback ? 'ДА (ТРЕБУЕТСЯ ИСПРАВЛЕНИЕ)' : 'НЕТ';
 
             statusText.textContent = extrootStr + ' | Ошибки: ' + errStr;
-            
+
             if (isFallback) {
                 statusText.style.color = '#ff5555';
             } else if (isExtroot) {
@@ -482,24 +477,31 @@ return view.extend({
             }
         };
 
-        var btnRefreshDevices = E('button', {
+        // --- Единственная кнопка "Получить состояние" ---
+        // callStatus() выполняется СТРОГО ПЕРВЫМ; callDevices() стартует
+        // только после успешного завершения первого промиса.
+        var btnGetState = E('button', {
             'class': 'cbi-button cbi-button-action',
             'style': 'margin-right:8px;',
+            'id': 'btn-get-state',
             'click': function(ev) {
                 var btn = ev.currentTarget;
                 btn.disabled = true;
-                btn.textContent = 'Загрузка...';
+                btn.textContent = 'Получение...';
 
                 var resetBtn = function() {
                     btn.disabled = false;
-                    btn.textContent = 'Обновить список';
+                    btn.textContent = 'Получить состояние';
                 };
 
-                Promise.all([callDevices(), callStatus()]).then(function(results) {
-                    var devices = unwrap(results[0]);
-                    var status = unwrap(results[1]) || {};
-                    updateUI(status, devices);
-                    ui.addNotification(null, E('p', {}, 'Список устройств обновлен.'), 'success');
+                callStatus().then(function(statusRes) {
+                    var status = unwrap(statusRes) || {};
+                    // Второй шаг выполняется ТОЛЬКО после успеха первого.
+                    return callDevices().then(function(devRes) {
+                        return { status: status, devices: unwrap(devRes) };
+                    });
+                }).then(function(data) {
+                    updateUI(data.status, data.devices);
                     resetBtn();
                 }).catch(function(err) {
                     var msg = (err && err.message) ? err.message : (typeof err === 'string' ? err : 'Неизвестная ошибка');
@@ -507,35 +509,10 @@ return view.extend({
                     resetBtn();
                 });
             }
-        }, 'Обновить список');
-
-        var btnCheckStatus = E('button', {
-            'class': 'cbi-button cbi-button-action',
-            'style': 'margin-right:8px;',
-            'click': function(ev) {
-                var btn = ev.currentTarget;
-                btn.disabled = true;
-                btn.textContent = 'Проверка...';
-
-                var resetBtn = function() {
-                    btn.disabled = false;
-                    btn.textContent = 'Проверить статус';
-                };
-
-                callStatus().then(function(res) {
-                    var status = unwrap(res) || {};
-                    updateUI(status, null);
-                    resetBtn();
-                }).catch(function(err) {
-                    var msg = (err && err.message) ? err.message : (typeof err === 'string' ? err : 'Неизвестная ошибка');
-                    ui.addNotification(null, E('p', {}, 'Ошибка: ' + msg), 'danger');
-                    resetBtn();
-                });
-            }
-        }, 'Проверить статус');
+        }, 'Получить состояние');
 
         var controls = E('div', { 'style': 'margin:10px 0;padding:10px;background:rgba(0,0,0,0.05);border:1px solid rgba(255,255,255,0.1);' }, [
-            E('div', { 'style': 'margin-bottom:8px;' }, [ btnRefreshDevices, btnCheckStatus ]),
+            E('div', { 'style': 'margin-bottom:8px;' }, [ btnGetState ]),
             statusText,
             hintText,
             E('hr', { 'style': 'border:0;border-top:1px solid rgba(255,255,255,0.1);margin:10px 0;' }),
@@ -566,7 +543,7 @@ return view.extend({
         }
 
         if ((mode === 'format' || mode === 'noformat') && !device) {
-            ui.addNotification(null, E('p', {}, 'Не выбран целевой накопитель. Нажмите "Обновить список".'), 'danger');
+            ui.addNotification(null, E('p', {}, 'Не выбран целевой накопитель. Нажмите "Получить состояние".'), 'danger');
             return;
         }
 
@@ -581,7 +558,7 @@ return view.extend({
 
         var descEl;
         var pStyle = { 'style': 'font-size:16px; color:#ff5555; font-weight:bold; margin-bottom:15px;' };
-        
+
         if (mode === 'format') {
             descEl = E('p', pStyle, [
                 'ВНИМАНИЕ: ВСЕ ДАННЫЕ на устройстве ',
@@ -643,7 +620,7 @@ return view.extend({
         var self = this;
         logOffset = 0;
         logPre.textContent = '';
-        
+
         var dev = device ? device : '';
 
         callRun(mode, dev, 'yes').then(function(res) {
@@ -658,9 +635,6 @@ return view.extend({
         });
     },
 
-
-
-
     startPolling: function(logPre) {
         if (pollTimer) clearInterval(pollTimer);
         var archiveDownloaded = false;
@@ -672,11 +646,9 @@ return view.extend({
                     logPre.textContent = cleanLog(r.chunk);
                     logPre.scrollTop = logPre.scrollHeight;
 
-                    // Проверка на архив
                     if (!archiveDownloaded && logPre.textContent.indexOf('архив создан') !== -1) {
                         archiveDownloaded = true;
-                        
-                        // Добавляем текст в лог
+
                         logPre.textContent += '\n=== Сохраняю архивную копию системы ===\n';
                         logPre.scrollTop = logPre.scrollHeight;
 
@@ -695,9 +667,6 @@ return view.extend({
             }).catch(function() { /* ignore */ });
         }, 1000);
     }
-
-
-
 });
 
 function showArchiveButton(info) {
