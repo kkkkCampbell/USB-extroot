@@ -1,12 +1,57 @@
 #!/bin/sh
 # ============================================================
-#  usb-extroot.sh  v0.1.19
+#  usb-extroot.sh  v0.1.20-draft
 #  Перенос overlay OpenWrt на USB-накопитель (extroot)
-#  Лог: /tmp/usb-extroot.log (сброс в overlay в конце)
-#  Бэкап: /tmp/.usb-extroot-x7k2m9q4p1w8/ (tmpfs, RAM)
+#  Лог: /tmp/usb-extroot.log
+#  Бэкап: /tmp/.usb-extroot-x7k2m9q4p1w8/
 # ============================================================
+ver="vv0.1.20-draft"
+
 # ------------------------------------------------------------
-#  Самопереезд в RAM.
+#  1. САМОЕ ПЕРВОЕ: Парсинг аргументов.
+# ------------------------------------------------------------
+BATCH=0
+BATCH_MODE=""
+BATCH_DEVICE=""
+BATCH_TARGET=""
+BATCH_CONFIRM=""
+BATCH_ACTION=""
+ARCHIVE_WAIT=30
+
+for _a in "$@"; do
+    case "$_a" in
+        --version)          echo "$ver"; exit 0 ;;
+        --batch)            BATCH=1 ;;
+        --mode=*)           BATCH_MODE="${_a#*=}" ;;
+        --device=*)         BATCH_DEVICE="${_a#*=}" ;;
+        --target=*)         BATCH_TARGET="${_a#*=}" ;;
+        --confirm=*)        BATCH_CONFIRM="${_a#*=}" ;;
+        --action=*)         BATCH_ACTION="${_a#*=}" ;;
+        --archive-wait=*)   ARCHIVE_WAIT="${_a#*=}" ;;
+    esac
+done
+
+if [ "$BATCH" = "1" ]; then
+    export BATCH BATCH_MODE BATCH_DEVICE BATCH_TARGET BATCH_CONFIRM BATCH_ACTION ARCHIVE_WAIT
+fi
+
+# ------------------------------------------------------------
+#  МГНОВЕННАЯ ИНИЦИАЛИЗАЦИЯ PID И ЛОГА
+# ------------------------------------------------------------
+PID_FILE=/var/run/usb-extroot.pid
+LOG=/tmp/usb-extroot.log
+
+if [ "$BATCH" = "1" ] && [ -z "$BATCH_ACTION" ]; then
+    echo $$ > "$PID_FILE"
+    trap 'rm -f "$PID_FILE"; pkg_repair_finish; share_down; exit 130' INT TERM HUP
+    trap 'rm -f "$PID_FILE"' EXIT
+
+    exec > "$LOG" 2>&1
+    echo "=== СТАРТ ОПЕРАЦИИ: $(date) ==="
+fi
+
+# ------------------------------------------------------------
+#  2. Самопереезд в RAM.
 # ------------------------------------------------------------
 path="/opt/usb-extroot"
 TEST_MODE=0
@@ -15,7 +60,7 @@ if [ ! -d "/opt/usb-extroot" ]; then mkdir -p "/opt/usb-extroot"; fi
 case "$0" in
     /tmp/*|/dev/shm/*|/run/*) ;;
     *)
-        if [ -f "$0" ] && [ -w /tmp ]; then
+        if [ -z "$BATCH_ACTION" ] && [ "$BATCH" != "1" ] && [ -f "$0" ] && [ -w /tmp ]; then
             SELF_RAM=/tmp/.usb-extroot-run.sh
             if cp "$0" "$SELF_RAM" 2>/dev/null; then
                 chmod +x "$SELF_RAM" 2>/dev/null
@@ -25,21 +70,19 @@ case "$0" in
         ;;
 esac
 
-ver="v0.1.19"
-
-CLR_RESET="\033[0m"
-CLR_GREEN="\033[32m"
-CLR_ORANGE="\033[38;5;208m"
-CLR_YELLOW="\033[33m"
-
-LOG=/tmp/usb-extroot.log
-if [ -z "$_LOGGED" ]; then
-    export _LOGGED=1
-    FIFO=/tmp/usb-extroot.fifo
-    rm -f "$FIFO"
-    mkfifo "$FIFO"
-    tee -a "$LOG" < "$FIFO" &
-    exec > "$FIFO" 2>&1
+# ------------------------------------------------------------
+#  3. Цвета
+# ------------------------------------------------------------
+if [ "$BATCH" = "1" ]; then
+    CLR_RESET=""
+    CLR_GREEN=""
+    CLR_ORANGE=""
+    CLR_YELLOW=""
+else
+    CLR_RESET="\033[0m"
+    CLR_GREEN="\033[32m"
+    CLR_ORANGE="\033[38;5;208m"
+    CLR_YELLOW="\033[33m"
 fi
 
 TEST_MODE="${TEST_MODE:-0}"
@@ -65,13 +108,10 @@ if have apk; then
     pkg_install_cmd="add"
 fi
 
-# ------------------------------------------------------------
-#  Полный список необходимых пакетов — ОДИН
-# ------------------------------------------------------------
 WANT_PKGS="block-mount uci tar e2fsprogs kmod-usb-storage kmod-usb-storage-uas kmod-fs-vfat kmod-fs-exfat kmod-fs-ext4"
 
 # ------------------------------------------------------------
-#  fs доступен ядру? (builtin, загружен или установлен модулем)
+#  Проверки пакетов
 # ------------------------------------------------------------
 fs_in_kernel() {
     local fs="$1"
@@ -82,9 +122,6 @@ fs_in_kernel() {
 
 ext4_in_kernel() { fs_in_kernel ext4; }
 
-# ------------------------------------------------------------
-#  usb-storage / uas загружены или установлены?
-# ------------------------------------------------------------
 usb_storage_in_kernel() {
     lsmod 2>/dev/null | grep -q '^usb_storage[[:space:]]' && return 0
     find "/lib/modules/$(uname -r)" -name 'usb-storage.ko*' 2>/dev/null | grep -q . && return 0
@@ -97,9 +134,6 @@ uas_in_kernel() {
     return 1
 }
 
-# ------------------------------------------------------------
-#  Полный tar, а не busybox-огрызок.
-# ------------------------------------------------------------
 tar_is_full() {
     local t
     t=$(command -v tar 2>/dev/null) || return 1
@@ -110,9 +144,6 @@ tar_is_full() {
     return 1
 }
 
-# ------------------------------------------------------------
-#  Установлен ли конкретный пакет (по его «якорю» в системе)
-# ------------------------------------------------------------
 pkg_present() {
     case "$1" in
         block-mount)          have block ;;
@@ -180,7 +211,7 @@ share_up() {
         uci -q set ksmbd.overlaybackup.users='12345'
         uci -q commit ksmbd
 
-        /etc/init.d/ksmbd restart >/dev/null 2>&1
+        /etc/init.d/ksmbd restart >/dev/null 2>&1 &
     fi
 }
 
@@ -200,9 +231,6 @@ share_down() {
     fi
 }
 
-# ============================================================
-#  Перехват INT/TERM/HUP
-# ============================================================
 trap 'echo; echo "Прервано. Восстанавливаю состояние..."; pkg_repair_finish; share_down; exit 130' INT TERM HUP
 
 pkg_repair_finish() {
@@ -232,43 +260,54 @@ pkg_repair_finish() {
     PKG_REPAIR_ACTIVE=0
 }
 
-# ============================================================
-#  Мягкий ребут с fallback на жёсткий.
-# ============================================================
 soft_reboot_with_fallback() {
-
-sync
-sleep 3
-# echo b > /proc/sysrq-trigger # For testing purposes
-# reboot -f # For testing purposes
-
-
     local delay="${1:-40}"
+
+    sync
+    sleep 3
+
+    if [ "$BATCH" = "1" ] && [ -n "$ARCHIVE_WAIT" ] && [ "$ARCHIVE_WAIT" -gt 0 ]; then
+        echo
+        echo -e "${CLR_GREEN}================================================================${CLR_RESET}"
+        echo -e "${CLR_GREEN} Подготовка к перезагрузке.${CLR_RESET}"
+        echo
+        echo -e "${CLR_YELLOW} Доступ к бэкапу (если создан):${CLR_RESET}"
+        echo -e "   SMB: \\\\\\\\$(get_router_ip)\\overlaybackup"
+        echo -e "   user: 12345   password: 12345"
+        echo
+        echo -e "${CLR_ORANGE} Перезагрузка через ${ARCHIVE_WAIT} секунд...${CLR_RESET}"
+        echo -e "${CLR_GREEN}================================================================${CLR_RESET}"
+        sleep "$ARCHIVE_WAIT"
+    fi
 
     setsid sh -c "
         trap '' TERM
         sleep $delay
         echo b > /proc/sysrq-trigger
-		sleep 1
-		reboot -f
+        sleep 1
+        reboot -f
     " &
 
-	umount -a -r >/dev/null 2>&1
-	sleep 2
-	if [ "$MODE" = "noformat" ] || [ "$MODE" = "restore" ] ; then
-		#echo "$MODE"
-		reboot -f
-	fi
-	reboot
-	echo "Перезагружаю роутер..."
+    umount -a -r >/dev/null 2>&1
+    sleep 2
+    if [ "$MODE" = "noformat" ] || [ "$MODE" = "restore" ]; then
+        reboot -f
+    fi
+    reboot
+    echo "Перезагружаю роутер..."
 }
 
-# ============================================================
-#  Ребут с 10-секундным окном отмены.
-# ============================================================
 confirm_reboot_or_die() {
     local need_share_down="${1:-0}"
     local cancel=0 i
+
+    if [ "$BATCH" = "1" ]; then
+        [ "$need_share_down" = "1" ] && share_down
+        sync
+        sleep 2
+        soft_reboot_with_fallback 40
+        return
+    fi
 
     echo
     echo -e "${CLR_ORANGE}!!! ПЕРЕЗАГРУЗКА ЧЕРЕЗ 10 СЕКУНД !!!${CLR_RESET}"
@@ -304,8 +343,8 @@ confirm_reboot_or_die() {
     [ "$need_share_down" = "1" ] && share_down
 
     echo "    Перезагружаюсь..."
-	echo -e "${CLR_ORANGE}    При перезагрузке  возможно зависание роутера!"
-	echo -e "    Перезапустите роутер отключив и подав питание.${CLR_RESET}"
+    echo -e "${CLR_ORANGE}    При перезагрузке  возможно зависание роутера!"
+    echo -e "    Перезапустите роутер отключив и подав питание.${CLR_RESET}"
     sync
     sleep 2
     soft_reboot_with_fallback 40
@@ -347,9 +386,6 @@ detect_pm() {
     fi
 }
 
-# ============================================================
-#  Родительское устройство
-# ============================================================
 parent_dev() {
     local d="$1"
     case "$d" in
@@ -578,9 +614,6 @@ get_current_overlay() {
     echo "$mp"
 }
 
-# ============================================================
-#  Быстрая проверка: есть ли вообще внешнее съёмное хранилище
-# ============================================================
 storage_quick_check() {
     for d in /dev/sd? /dev/mmcblk?; do
         [ -b "$d" ] || continue
@@ -590,9 +623,6 @@ storage_quick_check() {
     return 1
 }
 
-# ------------------------------------------------------------
-#  Один цикл: проверить и доустановить недостающее.
-# ------------------------------------------------------------
 pkg_ensure() {
     local missing="" p
     for p in $WANT_PKGS; do
@@ -711,29 +741,47 @@ stage2_find_usb() {
         echo -e "  ${CLR_YELLOW}$n -> ${CLR_GREEN}$(describe $d)  ${CLR_RESET}"
     done
     echo
-    printf "${CLR_RESET}Укажите целевой накопитель (введите число слева, 0 — отмена): "
-    read CHOSEN
 
-    case "$CHOSEN" in
-        0|"")
-            echo "Отменено."
-            exit 0
-            ;;
-    esac
-
-    ok=0
-    n=0
-    for d in $DISKS; do
-        n=$((n + 100))
-        if [ "$n" = "$CHOSEN" ]; then
-            TARGET="$d"
-            ok=1
-            break
+    if [ "$BATCH" = "1" ]; then
+        ok=0
+        for d in $DISKS; do
+            if [ "$d" = "$BATCH_DEVICE" ] || [ "$(parent_dev "$BATCH_DEVICE")" = "$d" ]; then
+                TARGET="$d"
+                ok=1
+                break
+            fi
+        done
+        if [ "$ok" != "1" ]; then
+            echo -e "${CLR_ORANGE}      batch: устройство '$BATCH_DEVICE' не найдено среди целей${CLR_RESET}"
+            echo "      доступно: $DISKS"
+            exit 2
         fi
-    done
+        echo -e "      batch: выбрано $TARGET (раздел: $BATCH_DEVICE)"
+    else
+        printf "${CLR_RESET}Укажите целевой накопитель (введите число слева, 0 — отмена): "
+        read CHOSEN
 
-    if [ "$ok" != "1" ]; then
-        die "$STAGE2" "Выбран несуществующий номер: $CHOSEN"
+        case "$CHOSEN" in
+            0|"")
+                echo "Отменено."
+                exit 0
+                ;;
+        esac
+
+        ok=0
+        n=0
+        for d in $DISKS; do
+            n=$((n + 100))
+            if [ "$n" = "$CHOSEN" ]; then
+                TARGET="$d"
+                ok=1
+                break
+            fi
+        done
+
+        if [ "$ok" != "1" ]; then
+            die "$STAGE2" "Выбран несуществующий номер: $CHOSEN"
+        fi
     fi
 
     DESC=$(describe "$TARGET")
@@ -749,7 +797,12 @@ stage2_find_usb() {
         PARTS="$PARTS $p"
     done
     [ -z "$PARTS" ] && PARTS="$TARGET"
-    PART=$(echo $PARTS | awk '{print $1}')
+    
+    if [ "$BATCH" = "1" ] && [ -b "$BATCH_DEVICE" ]; then
+        PART="$BATCH_DEVICE"
+    else
+        PART=$(echo $PARTS | awk '{print $1}')
+    fi
 
     block info "$PART" >/dev/null 2>&1
     FS=$(block info "$PART" 2>/dev/null | grep -o 'TYPE="[^"]*"' | cut -d'"' -f2)
@@ -777,9 +830,6 @@ quick_overlay_dev() {
     awk -v m="$mp" '$2==m {print $1; exit}' /proc/mounts
 }
 
-# ============================================================
-#  extroot уже активен?
-# ============================================================
 extroot_active() {
     local qdev
     qdev=$(quick_overlay_dev)
@@ -788,6 +838,61 @@ extroot_active() {
     return 0
 }
 
+# ============================================================
+#  BATCH: обработчики --action.
+# ============================================================
+if [ "$BATCH" = "1" ] && [ -n "$BATCH_ACTION" ]; then
+    case "$BATCH_ACTION" in
+        status)
+            if awk '$2=="/rom/overlay" {f=1; exit} END{exit !f}' /proc/mounts; then
+                echo "fallback=yes"
+            else
+                echo "fallback=no"
+            fi
+            qdev=$(quick_overlay_dev)
+            if [ -n "$qdev" ] && ! is_internal_dev "$qdev"; then
+                echo "extroot=yes"
+                echo "extroot_dev=$qdev"
+                echo "extroot_desc=$(describe "$qdev")"
+            else
+                echo "extroot=no"
+            fi
+            exit 0
+            ;;
+        devices)
+            for d in /dev/sd? /dev/mmcblk?; do
+                [ -b "$d" ] || continue
+                is_removable_storage "$d" || continue
+                for p in ${d}*; do
+                    [ -b "$p" ] || continue
+                    case "$(basename "$p")" in
+                        sd[a-z][0-9]*|mmcblk[0-9]*p[0-9]*) ;;
+                        *) continue ;;
+                    esac
+                    fs=$(timeout 2 block info "$p" 2>/dev/null | grep -o 'TYPE="[^"]*"' | cut -d'"' -f2)
+                    echo "$p|${fs:-}|$(describe "$p")"
+                    break
+                done
+            done
+            exit 0
+            ;;
+        archive-info)
+            latest=$(ls -t /tmp/.usb-extroot-*/overlay_backup_*.tar.gz 2>/dev/null | head -1)
+            if [ -n "$latest" ] && [ -f "$latest" ]; then
+                echo "exists=yes"
+                echo "size=$(wc -c < "$latest" 2>/dev/null || echo 0)"
+            else
+                echo "exists=no"
+            fi
+            exit 0
+            ;;
+        *)
+            echo "ERROR: unknown action '$BATCH_ACTION'" >&2
+            exit 2
+            ;;
+    esac
+fi
+
 EXTROOT_ACTIVE=0
 EXTROOT_DEV=""
 if extroot_active; then
@@ -795,9 +900,6 @@ if extroot_active; then
     EXTROOT_DEV=$(quick_overlay_dev)
 fi
 
-# ============================================================
-#  Фоллбэк активен?
-# ============================================================
 FALLBACK_ACTIVE=0
 if awk '$2=="/rom/overlay" {found=1; exit} END{exit !found}' /proc/mounts; then
     FALLBACK_ACTIVE=1
@@ -937,9 +1039,6 @@ mount_removable_all() {
     found=0
     flash=""
 
-    # 1. modprobe всех релевантных драйверов (no-op если уже загружены).
-    #    Решает случай: пакет установлен в этом же запуске, .ko есть,
-    #    но kmodloader успел подгрузить модуль уже после pkg_ensure.
     if have modprobe; then
         modprobe usb-storage 2>/dev/null || modprobe usb_storage 2>/dev/null || true
         modprobe uas 2>/dev/null || true
@@ -948,8 +1047,6 @@ mount_removable_all() {
         modprobe exfat 2>/dev/null || true
     fi
 
-    # 2. Если в /sys есть USB-интерфейс класса 08 (mass storage) —
-    #    подождать появления /dev/sd? до 10 сек.
     usb_ms=0
     for _u in /sys/bus/usb/devices/*:*/bInterfaceClass; do
         [ -f "$_u" ] || continue
@@ -1033,27 +1130,73 @@ mount_removable_all() {
     return 0
 }
 
-load_dependencies
+echo
 
 pkg_ensure
 
-echo
-echo "Монтирую съёмные накопители..."
-mount_removable_all
-
+if [ "$BATCH" = "1" ] && { [ "$BATCH_MODE" = "restore" ] || [ "$BATCH_MODE" = "fallback_fix" ] || [ "$BATCH_MODE" = "fallback-fix" ]; }; then
+    echo "      (режим $BATCH_MODE: пропускаю скачивание модулей и проверку USB)"
+else
+    load_dependencies
+    echo
+    echo "Монтирую съёмные накопители..."
+    mount_removable_all
+fi
 
 # ============================================================
-#  МЕНЮ
+#  BATCH: валидация аргументов перед стартом операции.
 # ============================================================
-while :; do
-    clear
-	if [ "$flash" = "no" ]; then
-		echo -e "${CLR_ORANGE}НАКОПИТЕЛИ НЕ ОБНАРУЖЕНЫ!${CLR_RESET}"
-		echo -e "${CLR_ORANGE}ПОДКЛЮЧИТЕ ФЛЭШКУ И ПЕРЕЗАПУСТИТЕ СКРИПТ${CLR_RESET}"
-	fi
+if [ "$BATCH" = "1" ]; then
+    if [ -z "$BATCH_MODE" ]; then
+        echo "ERROR: --mode не указан" >&2
+        exit 2
+    fi
+    case "$BATCH_MODE" in
+        format|noformat|restore|fallback-fix|fallback_fix) ;;
+        *)
+            echo "ERROR: неизвестный --mode='$BATCH_MODE' (допустимо: format, noformat, restore, fallback_fix)" >&2
+            exit 2
+            ;;
+    esac
+    case "$BATCH_MODE" in
+        format|noformat)
+            if [ -z "$BATCH_DEVICE" ]; then
+                echo "ERROR: --device не указан для mode=$BATCH_MODE" >&2
+                exit 2
+            fi
+            ;;
+    esac
+    if [ "$BATCH_CONFIRM" != "yes" ]; then
+        echo "ERROR: --confirm=yes обязателен" >&2
+        exit 2
+    fi
+    MODE=$(echo "$BATCH_MODE" | tr '-' '_')
+    case "$MODE" in
+        format)       CHOICE_TEXT="форматировать и перенести" ;;
+        noformat)     CHOICE_TEXT="перенести без форматирования" ;;
+        restore)      CHOICE_TEXT="восстановить загрузку с внутренней памяти" ;;
+        fallback_fix) CHOICE_TEXT="исправить аварийный режим" ;;
+    esac
+    echo
     echo "============================================================"
-    echo "usb-extroot.sh  ${ver}"
-    cat <<'BANNER'
+    echo "  BATCH: mode=$MODE"
+    [ -n "$BATCH_DEVICE" ] && echo "  device=$BATCH_DEVICE"
+    echo "============================================================"
+fi
+
+# ============================================================
+#  МЕНЮ (interactive)
+# ============================================================
+if [ "$BATCH" != "1" ]; then
+    while :; do
+        clear
+        if [ "$flash" = "no" ]; then
+            echo -e "${CLR_ORANGE}НАКОПИТЕЛИ НЕ ОБНАРУЖЕНЫ!${CLR_RESET}"
+            echo -e "${CLR_ORANGE}ПОДКЛЮЧИТЕ ФЛЭШКУ И ПЕРЕЗАПУСТИТЕ СКРИПТ${CLR_RESET}"
+        fi
+        echo "============================================================"
+        echo "usb-extroot.sh  ${ver}"
+        cat <<'BANNER'
 Перенос overlay OpenWrt на USB-накопитель (extroot)
 ------------------------------------------------------------
  До ввода YES — только чтение.
@@ -1061,80 +1204,81 @@ while :; do
  Лог: /tmp/usb-extroot.log
 ============================================================
 BANNER
-    accessible=""
-    if [ "$EXTROOT_ACTIVE" = "1" ]; then
+        accessible=""
+        if [ "$EXTROOT_ACTIVE" = "1" ]; then
+            echo
+            echo -e "${CLR_ORANGE} /overlay уже размещён на внешнем носителе: ${CLR_GREEN}$(describe "$EXTROOT_DEV")${CLR_RESET}"
+            echo " Пункты 1 и 2 недоступны."
+            accessible="(недоступно)"
+        fi
+
+        if [ "$FALLBACK_ACTIVE" = "1" ]; then
+            echo
+            echo -e "${CLR_ORANGE}!!! ОБНАРУЖЕНА ПРОБЛЕМА С OVERLAY !!!${CLR_RESET}"
+            echo -e "${CLR_ORANGE} overlay работает в аварийном режиме (фоллбэк).${CLR_RESET}"
+        fi
+
         echo
-        echo -e "${CLR_ORANGE} /overlay уже размещён на внешнем носителе: ${CLR_GREEN}$(describe "$EXTROOT_DEV")${CLR_RESET}"
-        echo " Пункты 1 и 2 недоступны."
-        accessible="(недоступно)"
-    fi
+        echo -e "${CLR_YELLOW}Действие:${CLR_RESET}"
+        echo -e "  1) Роутер → USB-накопитель с форматированием накопителя  ${CLR_ORANGE}${accessible}${CLR_RESET}"
+        echo -e "  2) Роутер → USB-накопитель без форматирования накопителя ${CLR_ORANGE}${accessible}${CLR_RESET}"
+        echo -e "  3) Восстановить загрузку с внутренней памяти роутера"
+        echo -e "  4) Выбор загрузочного устройства, клонирование накопителя"
+        if [ "$FALLBACK_ACTIVE" = "1" ]; then
+            echo -e "  ${CLR_ORANGE}5) Исправить аварийный режим overlay (рекомендуется)${CLR_RESET}"
+        fi
+        echo -e "  0) Выход"
+        printf "${CLR_YELLOW}Выбор: ${CLR_RESET}"
+        read CHOICE
 
-    if [ "$FALLBACK_ACTIVE" = "1" ]; then
-        echo
-        echo -e "${CLR_ORANGE}!!! ОБНАРУЖЕНА ПРОБЛЕМА С OVERLAY !!!${CLR_RESET}"
-        echo -e "${CLR_ORANGE} overlay работает в аварийном режиме (фоллбэк).${CLR_RESET}"
-    fi
-
-    echo
-    echo -e "${CLR_YELLOW}Действие:${CLR_RESET}"
-    echo -e "  1) Роутер → USB-накопитель с форматированием накопителя  ${CLR_ORANGE}${accessible}${CLR_RESET}"
-    echo -e "  2) Роутер → USB-накопитель без форматирования накопителя ${CLR_ORANGE}${accessible}${CLR_RESET}"
-    echo -e "  3) Восстановить загрузку с внутренней памяти роутера"
-    echo -e "  4) Выбор загрузочного устройства, клонирование накопителя"
-    if [ "$FALLBACK_ACTIVE" = "1" ]; then
-        echo -e "  ${CLR_ORANGE}5) Исправить аварийный режим overlay (рекомендуется)${CLR_RESET}"
-    fi
-    echo -e "  0) Выход"
-    printf "${CLR_YELLOW}Выбор: ${CLR_RESET}"
-    read CHOICE
-
-    case "$CHOICE" in
-        1) MODE=format;   CHOICE_TEXT="форматировать и перенести overlay на USB-носитель" ;;
-        2) MODE=noformat; CHOICE_TEXT="перенести без форматирования" ;;
-        3) MODE=restore;  CHOICE_TEXT="восстановить загрузку с внутренней памяти роутера" ;;
-        4)
-            if command -v second_drive_menu >/dev/null 2>&1; then
-                second_drive_menu
-            else
+        case "$CHOICE" in
+            1) MODE=format;   CHOICE_TEXT="форматировать и перенести overlay на USB-носитель" ;;
+            2) MODE=noformat; CHOICE_TEXT="перенести без форматирования" ;;
+            3) MODE=restore;  CHOICE_TEXT="восстановить загрузку с внутренней памяти роутера" ;;
+            4)
+                if command -v second_drive_menu >/dev/null 2>&1; then
+                    second_drive_menu
+                else
+                    echo
+                    echo "Модуль не подключён."
+                    sleep 2
+                fi
+                continue
+                ;;
+            5)
+                if [ "$FALLBACK_ACTIVE" != "1" ]; then
+                    echo
+                    echo "Пункт 5 доступен только при обнаружении фоллбэка."
+                    sleep 2
+                    continue
+                fi
+                MODE=fallback_fix
+                CHOICE_TEXT="исправить аварийный режим overlay"
+                ;;
+            0) echo "Выход."; exit 0 ;;
+            *)
                 echo
-                echo "Модуль не подключён."
-                sleep 2
-            fi
-            continue
-            ;;
-        5)
-            if [ "$FALLBACK_ACTIVE" != "1" ]; then
-                echo
-                echo "Пункт 5 доступен только при обнаружении фоллбэка."
+                echo "Неизвестный выбор: '$CHOICE'"
                 sleep 2
                 continue
-            fi
-            MODE=fallback_fix
-            CHOICE_TEXT="исправить аварийный режим overlay"
-            ;;
-        0) echo "Выход."; exit 0 ;;
-        *)
+                ;;
+        esac
+
+        if [ "$EXTROOT_ACTIVE" = "1" ] && [ "$MODE" != "restore" ] && [ "$MODE" != "fallback_fix" ]; then
             echo
-            echo "Неизвестный выбор: '$CHOICE'"
-            sleep 2
+            echo -e "${CLR_ORANGE}Невозможно: overlay уже на $EXTROOT_DEV.${CLR_RESET}"
+            echo "  Перенос c USB на тот же USB не имеет практического смысла."
+            echo "  Вам доступны только пункты 3, 4, 5, 0"
+            echo
+            printf "  Нажмите Enter для продолжения (авто через 10с): "
+            read -t 10 _
+            echo
             continue
-            ;;
-    esac
+        fi
 
-    if [ "$EXTROOT_ACTIVE" = "1" ] && [ "$MODE" != "restore" ] && [ "$MODE" != "fallback_fix" ]; then
-        echo
-        echo -e "${CLR_ORANGE}Невозможно: overlay уже на $EXTROOT_DEV.${CLR_RESET}"
-        echo "  Перенос c USB на тот же USB не имеет практического смысла."
-        echo "  Вам доступны только пункты 3, 4, 5, 0"
-        echo
-        printf "  Нажмите Enter для продолжения (авто через 10с): "
-        read -t 10 _
-        echo
-        continue
-    fi
-
-    break
-done
+        break
+    done
+fi
 
 # ============================================================
 #  ВЕТКА 5 — автоисправление фоллбэка overlay.
@@ -1338,7 +1482,7 @@ EOF
     rmdir "$UBI_MNT" 2>/dev/null || true
 
     echo
-    echo -e "${CLR_GREEN}Готово. Ребут для применения.${CLR_RESET}"
+    echo -e "${CLR_GREEN}Готово. Роутер перезагружается.${CLR_RESET}"
 
     confirm_reboot_or_die 0
     exit 0
@@ -1400,7 +1544,10 @@ fix_uboot_env
 stage0_deps check
 stage1_overlay
 
-if ! stage2_find_usb; then
+# Для restore и fallback_fix не ищем USB, а сразу идем дальше
+if [ "$MODE" = "restore" ] || [ "$MODE" = "fallback_fix" ]; then
+    :
+elif ! stage2_find_usb; then
     die "$CHOICE_TEXT" "Внешний накопитель найден, но не определён как диск (sd*/mmcblk*).
 Проверь: ls /dev/sd* /dev/mmcblk* и dmesg | tail -20"
 fi
@@ -1437,45 +1584,47 @@ fi
 echo -e "${CLR_GREEN}      структура overlay корректна${CLR_RESET}"
 
 echo "      физ.диски: overlay=$SKIP_PARENT usb=$(parent_dev "$PART")"
-
 echo
 
-
-CONFIRM_CODE=$(tr -dc '0-9' < /dev/urandom 2>/dev/null | head -c 4)
-
-echo
-echo -e "      ${CLR_ORANGE}############################################${CLR_RESET}"
-echo -e "      ${CLR_ORANGE}#      ВНИМАНИЕ: НЕОБРАТИМАЯ ОПЕРАЦИЯ!     #${CLR_RESET}"
-echo -e "      ${CLR_ORANGE}############################################${CLR_RESET}"
-echo
-if [ "$MODE" = format ]; then
-    echo -e "${CLR_ORANGE}Все данные на $DESCбудут уничтожены!${CLR_RESET}"
+if [ "$BATCH" = "1" ]; then
+    echo -e "${CLR_GREEN}      batch: подтверждение уже получено через --confirm=yes${CLR_RESET}"
 else
-    echo -e "${CLR_YELLOW}На $PART будет удалена только overlay-структура (upper/, work/, .fs_state),${CLR_RESET}"
-    echo -e "${CLR_YELLOW}остальные данные не тронуты. Затем будет развёрнут overlay.${CLR_RESET}"
-fi
+    CONFIRM_CODE=$(tr -dc '0-9' < /dev/urandom 2>/dev/null | head -c 4)
 
-echo
-echo "Сейчас будет уничтожен накопитель:"
-echo -e "    ${CLR_YELLOW}$DESC${CLR_RESET}"
-echo -e "    раздел: ${CLR_YELLOW}$PART${CLR_RESET}"
-echo
-if [ "$MODE" = format ]; then
-    echo -e "Действие: ${CLR_ORANGE}ФОРМАТИРОВАНИЕ${CLR_RESET} mkfs.ext4 -F $PART"
-else
-    echo -e "Действие: ${CLR_ORANGE}удаление overlay-структуры на $PART${CLR_RESET} (upper/, work/, .fs_state)"
-fi
-echo
-printf "Для подтверждения ${CLR_ORANGE}УНИЧТОЖЕНИЯ ДАННЫХ НА НАКОПИТЕЛЕ${CLR_RESET} введите число:"
-printf " ${CLR_YELLOW}${CONFIRM_CODE}${CLR_RESET}"
-echo
-printf "Число (Enter — отмена): "
-read A
-
-if [ "$A" != "$CONFIRM_CODE" ]; then
     echo
-    echo "Отменено."
-    exit 0
+    echo -e "      ${CLR_ORANGE}############################################${CLR_RESET}"
+    echo -e "      ${CLR_ORANGE}#      ВНИМАНИЕ: НЕОБРАТИМАЯ ОПЕРАЦИЯ!     #${CLR_RESET}"
+    echo -e "      ${CLR_ORANGE}############################################${CLR_RESET}"
+    echo
+    if [ "$MODE" = format ]; then
+        echo -e "${CLR_ORANGE}Все данные на $DESC будут уничтожены!${CLR_RESET}"
+    else
+        echo -e "${CLR_YELLOW}На $PART будет удалена только overlay-структура (upper/, work/, .fs_state),${CLR_RESET}"
+        echo -e "${CLR_YELLOW}остальные данные не тронуты. Затем будет развёрнут overlay.${CLR_RESET}"
+    fi
+
+    echo
+    echo "Сейчас будет уничтожен накопитель:"
+    echo -e "    ${CLR_YELLOW}$DESC${CLR_RESET}"
+    echo -e "    раздел: ${CLR_YELLOW}$PART${CLR_RESET}"
+    echo
+    if [ "$MODE" = format ]; then
+        echo -e "Действие: ${CLR_ORANGE}ФОРМАТИРОВАНИЕ${CLR_RESET} mkfs.ext4 -F $PART"
+    else
+        echo -e "Действие: ${CLR_ORANGE}удаление overlay-структуры на $PART${CLR_RESET} (upper/, work/, .fs_state)"
+    fi
+    echo
+    printf "Для подтверждения ${CLR_ORANGE}УНИЧТОЖЕНИЯ ДАННЫХ НА НАКОПИТЕЛЕ${CLR_RESET} введите число:"
+    printf " ${CLR_YELLOW}${CONFIRM_CODE}${CLR_RESET}"
+    echo
+    printf "Число (Enter — отмена): "
+    read A
+
+    if [ "$A" != "$CONFIRM_CODE" ]; then
+        echo
+        echo "Отменено."
+        exit 0
+    fi
 fi
 
 echo -e "Подтверждено: ${CLR_YELLOW}$TARGET ($MODE)${CLR_RESET}."
@@ -1767,13 +1916,6 @@ mkdir -p "$BACKUP_DIR"
 TS=$(date +%Y-%m-%d_%H-%M-%S)
 BACKUP_ARCHIVE="$BACKUP_DIR/overlay_backup_${TS}.tar.gz"
 
-echo "      поднимаю шару для доступа к бэкапу..."
-share_up
-echo -e "      ${CLR_GREEN}Доступ к бэкапу по локальной сети: "
-echo -e "      ${CLR_YELLOW}\\\\\\\\$(get_router_ip)\\overlaybackup"
-echo -e "      user: 12345   password: 12345${CLR_RESET}"
-echo
-
 echo "      удаляю whiteouts из staging..."
 find "$STAGE_DIR/overlay/upper" -name '.wh.*' -delete 2>/dev/null || true
 find "$STAGE_DIR/overlay/upper" -type d -empty -delete 2>/dev/null || true
@@ -1795,6 +1937,13 @@ fi
 ARCHIVE_SIZE_KB=$(du -k "$BACKUP_ARCHIVE" 2>/dev/null | awk '{print $1}')
 echo "      архив: ${ARCHIVE_SIZE_KB}K"
 echo -e "${CLR_GREEN}      архив создан${CLR_RESET}"
+
+echo "      поднимаю шару для доступа к бэкапу..."
+share_up
+echo -e "      ${CLR_GREEN}Доступ к бэкапу по локальной сети: "
+echo -e "      ${CLR_YELLOW}\\\\\\\\$(get_router_ip)\\overlaybackup"
+echo -e "      user: 12345   password: 12345${CLR_RESET}"
+echo
 
 # ============================================================
 #  ШАГ 9. fstab
@@ -1912,7 +2061,7 @@ echo -e "${CLR_YELLOW}    user: 12345   password: 12345${CLR_RESET}"
 echo
 echo -e "${CLR_ORANGE}    При перезагрузке  возможно зависание роутера!${CLR_RESET}"
 echo -e "${CLR_ORANGE}    Перезапустите роутер отключив и подав питание.${CLR_RESET}"
-echo 
+echo
 echo -e "${CLR_GREEN}================================================================${CLR_RESET}"
 
 confirm_reboot_or_die 1
