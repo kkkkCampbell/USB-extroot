@@ -465,50 +465,43 @@ return view.extend({
             }
         }, 'Исправить аварийный режим overlay');
 
-        var btnTransfer = E('button', {
-            'class': 'cbi-button cbi-button-apply',
+       var btnTransfer = E('button', {
+            'class': 'cbi-button',
             'style': 'margin-right:8px;',
             'id': 'btn-transfer',
-            'click': function() {
-                self.runOp(modeSelect.value, deviceSelect.value, null, logPre);
-            }
+            'click': function() { self.runOp(modeSelect.value, deviceSelect.value, null, logPre); }
         }, 'Выполнить перенос');
 
         var btnRestore = E('button', {
-            'class': 'cbi-button cbi-button-reset',
+            'class': 'cbi-button',
             'style': 'margin-right:8px;',
             'id': 'btn-restore',
-            'click': function() {
-                self.runOp('restore', null, null, logPre);
-            }
+            'click': function() { self.runOp('restore', null, null, logPre); }
         }, 'Восстановить загрузку с внутренней памяти');
 
         var btnRestoreArchive = E('button', {
-            'class': 'cbi-button cbi-button-reset',
+            'class': 'cbi-button',
             'style': 'margin-right:8px;',
             'id': 'btn-restore-archive',
-            'click': function() {
-                self.showArchiveList(logPre);
-            }
+            'click': function() { self.showArchiveList(logPre); }
         }, 'Восстановить из архива на флешке');
 
         var btnBackup = E('button', {
-            'class': 'cbi-button cbi-button-action',
-            'style': 'margin-right:8px;',
+            'class': 'cbi-button',
+            'style': 'margin-right:32px;', // <--- Увеличиваем отступ справа
             'id': 'btn-backup-manual',
-            'click': function() {
-                self.runBackupManual(logPre);
-            }
+            'click': function() { self.runBackupManual(logPre); }
         }, 'Создать бэкап сейчас');
 
         var btnUpload = E('button', {
-            'class': 'cbi-button cbi-button-action',
+            'class': 'cbi-button',
             'style': 'margin-right:8px;',
             'id': 'btn-upload-archive',
-            'click': function() {
-                self.showUploadDialog(logPre);
-            }
+            'click': function() { self.showUploadDialog(logPre); }
         }, 'Загрузить архив с ПК');
+		
+		
+		
 
         var updateUI = function(status, devices) {
             var isExtroot = (status.extroot === 'yes');
@@ -640,6 +633,15 @@ return view.extend({
             }
         }, 'Получить состояние');
 
+
+
+
+
+
+
+
+
+
         var controls = E('div', { 'style': 'margin:10px 0;padding:10px;background:rgba(0,0,0,0.05);border:1px solid rgba(255,255,255,0.1);' }, [
             E('div', { 'style': 'margin-bottom:8px;' }, [ btnGetState ]),
             statusText,
@@ -651,8 +653,30 @@ return view.extend({
             E('div', { 'style': 'margin-bottom:12px;display:flex;gap:10px;align-items:center;' }, [
                 E('label', { 'style': 'font-weight:bold;white-space:nowrap;' }, 'Накопитель:'), deviceSelect
             ]),
-            E('div', {}, [ btnTransfer, btnRestore, btnRestoreArchive, btnBackup, btnUpload, btnFallback ])
+
+            // === Ряд 1: Управление системой ===
+            E('div', { 'style': 'display:flex; flex-wrap:wrap; gap:8px; margin-top:20px; margin-bottom:15px;' }, [
+                btnTransfer,
+                btnRestore,
+                btnFallback
+            ]),
+
+            // === Визуальный разрыв ===
+            E('div', { 'style': 'border-top:1px dashed rgba(255,255,255,0.2); margin-bottom:15px;' }),
+
+            // === Ряд 2: Бэкапы (Создание и Восстановление) ===
+            E('div', { 'style': 'display:flex; flex-wrap:wrap; gap:8px;' }, [
+                btnBackup,
+                btnRestoreArchive,
+                btnUpload
+            ])
         ]);
+
+
+
+
+
+
 
         return E([], [
             E('h2', {}, [
