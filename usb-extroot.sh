@@ -1548,12 +1548,8 @@ if [ "$MODE" = "restore_archive" ]; then
 	fi
 
 	# 3. Снести текущий верхний слой на цели.
-	if [ -d "$RESTORE_TARGET/upper" ]; then
-		BAK="$RESTORE_TARGET/upper.bak_$(date +%Y%m%d_%H%M%S)"
-		echo "      сохраняю старый upper в $BAK"
-		mv "$RESTORE_TARGET/upper" "$BAK" 2>/dev/null || rm -rf "$RESTORE_TARGET/upper"
-	fi
-	rm -rf "$RESTORE_TARGET/work"
+	# 3. Снести текущий верхний слой на цели.
+	rm -rf "$RESTORE_TARGET/upper"
 	mkdir -p "$RESTORE_TARGET/work"
 
 	# 4. Распаковать архив.
