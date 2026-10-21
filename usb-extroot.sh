@@ -8,7 +8,7 @@
 	#  sh <( wget -qO- https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft/usb-extroot-install.sh )
 	# 
 	# ============================================================
-	ver="v0.1.21-draft"
+	ver="v0.1.24-draft"
 
 	# ------------------------------------------------------------
 	#  1. Парсинг аргументов.
