@@ -940,10 +940,6 @@ if [ "$BATCH" = "1" ] && [ -n "$BATCH_ACTION" ]; then
 		devices)
 			for d in /dev/sd? /dev/mmcblk? /dev/nvme?n? /dev/vd?; do
 				[ -b "$d" ] || continue
-				
-				# Пропускаем диск, на котором лежит /overlay
-				qdev=$(quick_overlay_dev)
-				[ -n "$qdev" ] && [ "$(parent_dev "$d")" = "$(parent_dev "$qdev")" ] && continue
 
 				# Пропускаем внутренние (не-USB) устройства
 				if ! is_usb "/dev/$(basename $d)" && [ "$(cat /sys/block/$(basename $d)/removable 2>/dev/null)" != "1" ]; then
