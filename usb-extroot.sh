@@ -1,14 +1,14 @@
 #!/bin/sh
 # ============================================================
-#  usb-extroot.sh  v0.1.31-draft
+#  usb-extroot.sh  v0.1.32-draft
 #  Перенос overlay OpenWrt на USB-накопитель (extroot)
 #  Лог: /tmp/usb-extroot.log
 #  Бэкап: /tmp/.usb-extroot-x7k2m9q4p1w8/
 #
 #  sh <( wget -qO- https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft/usb-extroot-install.sh )
-# 
+#  sh /usb-extroot-install.sh
 # ============================================================
-ver="v0.1.31-draft"
+ver="v0.1.32-draft"
 
 # ------------------------------------------------------------
 #  1. Парсинг аргументов.
@@ -1102,11 +1102,15 @@ _dep_find_local() {
 	return 1
 }
 
-load_dependencies() {
+DEPS_LOADED=0
+ensure_dependencies() {
+	[ "$DEPS_LOADED" = "1" ] && return 0
+	load_dependencies
+	DEPS_LOADED=1
+	return 0
+}
 
-	if [ "$MODE" = "reset_keep_extroot" ]; then 
-		return 0 
-	fi
+load_dependencies() {
 	
 	local new_clone="/tmp/clone-overlay.sh.new"
 	local new_switch="/tmp/switch-overlay.sh.new"
@@ -1276,9 +1280,8 @@ mount_removable_all() {
 echo
 
 if [ "$BATCH" = "1" ] && { [ -n "$BATCH_ACTION" ] || [ "$BATCH_MODE" = "reset_keep_extroot" ] || [ "$BATCH_MODE" = "restore" ] || [ "$BATCH_MODE" = "fallback-fix" ] || [ "$BATCH_MODE" = "restore_archive" ] || [ "$BATCH_MODE" = "backup" ] || [ "$BATCH_MODE" = "backup_manual" ]; }; then
-	echo "      (режим $BATCH_ACTION $BATCH_MODE: пропускаю скачивание модулей и проверку USB)"
+	echo "      (режим $BATCH_ACTION $BATCH_MODE: пропускаю сканирование USB)"
 else
-	load_dependencies
 	echo
 	echo "Монтирую съёмные накопители..."
 	mount_removable_all
@@ -1744,6 +1747,7 @@ cat <<-'BANNER'
 			2) MODE=noformat; CHOICE_TEXT="перенести без форматирования" ;;
 			3) MODE=restore;  CHOICE_TEXT="восстановить загрузку с внутренней памяти роутера" ;;
 			4)
+				ensure_dependencies
 				if command -v second_drive_menu >/dev/null 2>&1; then
 					second_drive_menu
 				else
@@ -1885,12 +1889,9 @@ fi
 # ============================================================
 #  ВЕТКА reset_keep_extroot — сброс с сохранением загрузки с флешки.
 # ============================================================
-rm -rf /overlay/upper.old 2>/dev/null
-mv /overlay/upper /overlay/upper.old
-sync; sleep 2
-reboot -f
 
 if [ "$MODE" = "reset_keep_extroot" ]; then
+
 	QDEV=$(quick_overlay_dev)
 	if [ -z "$QDEV" ] || is_internal_dev "$QDEV"; then
 		die "$CHOICE_TEXT" "Сброс с сохранением extroot доступен только при загрузке с внешней флешки."
@@ -1952,11 +1953,7 @@ EOF
 	sync
 	echo -e "${CLR_GREEN}      Сброс завершён.${CLR_RESET}"
 	sleep 2
-	umount -a
-	sleep 1
 	reboot -f
-	confirm_reboot_or_die 0
-	exit 0
 fi
 
 
@@ -2401,6 +2398,7 @@ if [ "$MODE" = format ]; then
 			fatal "$STAGE7" "Раздел $PART не удаётся освободить перед mkfs."
 		fi
 		echo -e "${CLR_GREEN}      $PART свободен после пересоздания${CLR_RESET}"
+		echo -e "${CLR_ORANGE}Форматирую накопитель...${CLR_RESET}"
 	fi
 
 	mkfs_success=0
