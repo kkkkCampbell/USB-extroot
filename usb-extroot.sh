@@ -1,6 +1,6 @@
 #!/bin/sh
 # ============================================================
-#  usb-extroot.sh  v0.1.30-draft
+#  usb-extroot.sh  v0.1.31-draft
 #  Перенос overlay OpenWrt на USB-накопитель (extroot)
 #  Лог: /tmp/usb-extroot.log
 #  Бэкап: /tmp/.usb-extroot-x7k2m9q4p1w8/
@@ -8,7 +8,7 @@
 #  sh <( wget -qO- https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft/usb-extroot-install.sh )
 # 
 # ============================================================
-ver="v0.1.30-draft"
+ver="v0.1.31-draft"
 
 # ------------------------------------------------------------
 #  1. Парсинг аргументов.
@@ -344,7 +344,6 @@ soft_reboot_with_fallback() {
 		reboot -f
 	" &
 
-	umount -a -r >/dev/null 2>&1
 	sleep 2
 	if [ "$MODE" = "noformat" ] || [ "$MODE" = "restore" ]; then
 		reboot -f
@@ -1104,6 +1103,11 @@ _dep_find_local() {
 }
 
 load_dependencies() {
+
+	if [ "$MODE" = "reset_keep_extroot" ]; then 
+		return 0 
+	fi
+	
 	local new_clone="/tmp/clone-overlay.sh.new"
 	local new_switch="/tmp/switch-overlay.sh.new"
 	local ok_clone=0 ok_switch=0
@@ -1271,7 +1275,7 @@ mount_removable_all() {
 
 echo
 
-if [ "$BATCH" = "1" ] && { [ -n "$BATCH_ACTION" ] || [ "$BATCH_MODE" = "restore" ] || [ "$BATCH_MODE" = "fallback_fix" ] || [ "$BATCH_MODE" = "fallback-fix" ] || [ "$BATCH_MODE" = "restore_archive" ] || [ "$BATCH_MODE" = "backup" ] || [ "$BATCH_MODE" = "backup_manual" ]; }; then
+if [ "$BATCH" = "1" ] && { [ -n "$BATCH_ACTION" ] || [ "$BATCH_MODE" = "reset_keep_extroot" ] || [ "$BATCH_MODE" = "restore" ] || [ "$BATCH_MODE" = "fallback-fix" ] || [ "$BATCH_MODE" = "restore_archive" ] || [ "$BATCH_MODE" = "backup" ] || [ "$BATCH_MODE" = "backup_manual" ]; }; then
 	echo "      (режим $BATCH_ACTION $BATCH_MODE: пропускаю скачивание модулей и проверку USB)"
 else
 	load_dependencies
@@ -1289,7 +1293,7 @@ if [ "$BATCH" = "1" ]; then
 		exit 2
 	fi
 	case "$BATCH_MODE" in
-		format|noformat|restore|fallback-fix|fallback_fix|restore_archive|backup|backup-manual|backup_manual) ;;
+		format|noformat|restore|fallback-fix|fallback_fix|restore_archive|backup|backup-manual|backup_manual|reset_keep_extroot) ;;
 		*)
 			echo "ERROR: неизвестный --mode='$BATCH_MODE'" >&2
 			exit 2
@@ -1329,6 +1333,7 @@ if [ "$BATCH" = "1" ]; then
 		restore_archive) CHOICE_TEXT="восстановление из архива" ;;
 		backup)          CHOICE_TEXT="автобэкап" ;;
 		backup_manual)   CHOICE_TEXT="ручной бэкап" ;;
+		reset_keep_extroot) CHOICE_TEXT="сброс к заводским с сохранением загрузки с флэшки" ;;
 	esac
 	echo
 	echo "============================================================"
@@ -1514,15 +1519,7 @@ if [ "$MODE" = "restore_archive" ]; then
 			fi
 		done
 	fi
-	
-	
-	for mnt in $(awk '$3=="ext4" || $3=="f2fs" || $3=="btrfs" {print $2}' /proc/mounts); do
-		candidate="$mnt/usb-extroot-backups/$BATCH_ARCHIVE"
-		if [ -f "$candidate" ]; then
-			ARCHIVE_PATH="$candidate"
-			break
-		fi
-	done
+
 	if [ -z "$ARCHIVE_PATH" ]; then
 		die "$CHOICE_TEXT" "Архив не найден: $BATCH_ARCHIVE
 	Проверь: find /mnt -name '$BATCH_ARCHIVE' 2>/dev/null"
@@ -1547,7 +1544,6 @@ if [ "$MODE" = "restore_archive" ]; then
 	Используйте штатное восстановление или выберите архив, созданный кнопкой «Создать бэкап»."
 	fi
 
-	# 3. Снести текущий верхний слой на цели.
 	# 3. Снести текущий верхний слой на цели.
 	rm -rf "$RESTORE_TARGET/upper"
 	mkdir -p "$RESTORE_TARGET/work"
@@ -1587,37 +1583,53 @@ if [ "$MODE" = "restore_archive" ]; then
 		die "$CHOICE_TEXT" "Не получил UUID для $RESTORE_PART."
 	fi
 
-	# 6. Целевой fstab — минимальный.
+	# 6. Целевой fstab (НА ФЛЕШКЕ) — БЕЗ extroot.
+	# 6. Целевой fstab (НА ФЛЕШКЕ) — БЕЗ extroot.
 	RESTORE_CFG="$RESTORE_TARGET/upper/etc/config"
-	echo "      заменяю $RESTORE_CFG/fstab (только extroot)"
+	echo "      заменяю $RESTORE_CFG/fstab (без extroot)"
 	cat > "$RESTORE_CFG/fstab" <<FSTAB_EOF
-config globals 'globals'
-	option ula_prefix 'auto'
-
-config mount 'extroot'
-	option uuid '$RESTORE_UUID'
-	option target '/overlay'
-	option enabled '1'
+config global
+	option anon_swap '0'
+	option anon_mount '0'
+	option auto_swap '1'
+	option auto_mount '1'
+	option delay_root '5'
+	option check_fs '0'
 FSTAB_EOF
-	echo "      --- целевой fstab ---"
-	sed 's/^/      /' "$RESTORE_CFG/fstab"
-	echo "      ---------------------"
 
-	# 7. Живой fstab — только extroot.
+	# 7. Живой fstab (ТЕКУЩАЯ СИСТЕМА) — тоже без extroot, чтобы не было дедлока при ребуте.
 	uci -q delete fstab.extroot
 	uci -q delete fstab.rwm
-	uci set fstab.extroot=mount
-	uci set fstab.extroot.uuid="$RESTORE_UUID"
-	uci set fstab.extroot.target="/overlay"
-	uci set fstab.extroot.enabled="1"
 	uci commit fstab
-	echo "      --- живой fstab (extroot) ---"
-	uci show fstab.extroot 2>/dev/null | sed 's/^/      /'
-	echo "      ----------------------------"
 
+	# 8. Записываем extroot во ВНУТРЕННИЙ UBI.
+	echo "      настраиваю extroot во внутренней памяти (UBI)..."
+	UBI_DEV=$(find_internal_overlay_dev)
+	if [ -n "$UBI_DEV" ]; then
+		UBI_MNT=/tmp/ubi_restore
+		mkdir -p "$UBI_MNT"
+		if mount -t ubifs "$UBI_DEV" "$UBI_MNT" 2>/dev/null || mount "$UBI_DEV" "$UBI_MNT" 2>/dev/null; then
+			UBI_CFG="$UBI_MNT/upper/etc/config"
+			if [ -d "$UBI_CFG" ]; then
+				uci -c "$UBI_CFG" -q delete fstab.extroot
+				uci -c "$UBI_CFG" set fstab.extroot=mount
+				uci -c "$UBI_CFG" set fstab.extroot.uuid="$RESTORE_UUID"
+				uci -c "$UBI_CFG" set fstab.extroot.target="/overlay"
+				uci -c "$UBI_CFG" set fstab.extroot.enabled="1"
+				uci -c "$UBI_CFG" -q delete fstab.rwm
+				uci -c "$UBI_CFG" commit fstab
+				echo "      extroot: UUID=$RESTORE_UUID -> /overlay (сохранено в UBI)"
+			fi
+			umount "$UBI_MNT" 2>/dev/null || true
+			rmdir "$UBI_MNT" 2>/dev/null || true
+		else
+			echo -e "${CLR_ORANGE}      ВНИМАНИЕ: не смог смонтировать UBI для записи extroot!${CLR_RESET}"
+		fi
+	fi
+	
 	echo -e "      extroot: UUID=${CLR_YELLOW}$RESTORE_UUID${CLR_RESET} ($RESTORE_PART) -> /overlay"
 
-	# 8. reboot_after.sh.
+	# 9. reboot_after.sh.
 	REBOOT_HELPER="$RESTORE_TARGET/upper/root/reboot_after.sh"
 	mkdir -p "$RESTORE_TARGET/upper/root"
 	cat > "$REBOOT_HELPER" <<-'EOF'
@@ -1871,6 +1883,84 @@ if [ "$MODE" = "fallback_fix" ]; then
 fi
 
 # ============================================================
+#  ВЕТКА reset_keep_extroot — сброс с сохранением загрузки с флешки.
+# ============================================================
+rm -rf /overlay/upper.old 2>/dev/null
+mv /overlay/upper /overlay/upper.old
+sync; sleep 2
+reboot -f
+
+if [ "$MODE" = "reset_keep_extroot" ]; then
+	QDEV=$(quick_overlay_dev)
+	if [ -z "$QDEV" ] || is_internal_dev "$QDEV"; then
+		die "$CHOICE_TEXT" "Сброс с сохранением extroot доступен только при загрузке с внешней флешки."
+	fi
+	QMP=$(awk -v d="$QDEV" '$1==d {print $2; exit}' /proc/mounts)
+	QUUID=$(block info "$QDEV" 2>/dev/null | grep -o 'UUID="[^"]*"' | cut -d'"' -f2)
+	[ -n "$QMP" ] && [ -n "$QUUID" ] || die "$CHOICE_TEXT" "Не получил точку монтирования или UUID для $QDEV."
+
+	# 1. Staging
+	mkdir -p "$QMP/upper.new"
+	#for dir in etc lib opt usr www root bin sbin; do	
+	for dir in etc; do
+		[ -d "/rom/$dir" ] && cp -a "/rom/$dir" "$QMP/upper.new/"
+	done
+	mkdir -p "$QMP/upper.new/root"
+
+	# 2. Атомарная подмена (workdir НЕ ТРОГАЕМ!)
+	mv "$QMP/upper" "$QMP/upper.old"
+	mv "$QMP/upper.new" "$QMP/upper"
+	#rm -rf "$QMP/upper.old"
+
+	# fstab с extroot (как в основном потоке)
+	cat > "$QMP/upper/etc/config/fstab" <<FSTAB_EOF
+config global
+	option anon_swap '0'
+	option anon_mount '0'
+	option auto_swap '1'
+	option auto_mount '1'
+	option delay_root '5'
+	option check_fs '0'
+
+config mount 'extroot'
+	option uuid '$QUUID'
+	option target '/overlay'
+	option enabled '1'
+FSTAB_EOF
+
+	# подтверждение загрузки для ac_recovery — тот же reboot_after.sh, что и в других ветках
+	cat > "$QMP/upper/root/reboot_after.sh" <<-'EOF'
+	#!/bin/sh
+	# RESET
+	rm -f /root/reboot_after.sh
+	sed -i '/^\/root\/reboot_after\.sh$/d' /etc/rc.local 2>/dev/null || true
+	mkdir -p /overlay
+	sleep 20
+	if ! mount | grep -q ' /rom/overlay ' && mount | grep -q ' /overlay '; then
+		rm -f /flagfile
+		/etc/init.d/ac_recovery.sh stop
+		exit 0
+	fi
+	sync
+	reboot
+EOF
+	chmod +x "$QMP/upper/root/reboot_after.sh"
+
+	printf '#!/bin/sh\n/root/reboot_after.sh\nexit 0\n' > "$QMP/upper/etc/rc.local"
+	chmod +x "$QMP/upper/etc/rc.local"
+
+	sync
+	echo -e "${CLR_GREEN}      Сброс завершён.${CLR_RESET}"
+	sleep 2
+	umount -a
+	sleep 1
+	reboot -f
+	confirm_reboot_or_die 0
+	exit 0
+fi
+
+
+# ============================================================
 #  ВЕТКА 3 — восстановление загрузки с внутренней памяти
 # ============================================================
 if [ "$MODE" = "restore" ]; then
@@ -1907,7 +1997,7 @@ if [ "$MODE" = "restore" ]; then
 			;;
 	esac
 
-	UBI_MNT=/mnt/ubi_restore
+	UBI_MNT=/tmp/ubi_restore
 	mkdir -p "$UBI_MNT"
 
 	mount_ok=0
