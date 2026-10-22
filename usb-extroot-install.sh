@@ -12,6 +12,7 @@ if [ "$(id -u)" != "0" ]; then
 fi
 
 mkdir -p "$BASE_DIR"
+chmod +x "$BASE_DIR/usb-extroot.sh"
 
 if [ "$TEST_MODE" != "1" ]; then
 	SRC="https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft"
@@ -22,13 +23,13 @@ if [ "$TEST_MODE" != "1" ]; then
 			exit 1
 		fi
 	fi
-	echo "    OK"
 else
     echo "==> TEST_MODE=1: пропускаю скачивание usb-extroot.sh"
     if [ ! -x "$BASE_DIR/usb-extroot.sh" ]; then
         echo "    ВНИМАНИЕ: $BASE_DIR/usb-extroot.sh не найден или не исполняемый!"
     fi
 fi
+
 chmod +x "$BASE_DIR/usb-extroot.sh"
 
 # ---- UCI config (только для дефолтов, если нет файла) ----
@@ -257,7 +258,7 @@ method_run() {
     fi
 
     case "$mode" in
-        format|noformat|restore|fallback_fix|restore_archive|backup|backup_manual) ;;
+        format|noformat|restore|fallback_fix|restore_archive|backup|backup_manual|reset_keep_extroot) ;;
         *) 
             echo "ERROR: invalid mode '$mode'" >> "$LOG"
             echo '{ "error": "invalid mode" }'
@@ -502,6 +503,16 @@ return view.extend({
 		
 		
 		
+        var btnFactoryReset = E('button', {
+            'class': 'cbi-button cbi-button-negative',
+            'style': 'margin-top:20px; display:none;', // <-- скрыта по умолчанию
+            'id': 'btn-factory-reset',
+            'click': function() {
+                self.runOp('reset_keep_extroot', null, null, logPre);
+            }
+        }, 'Сбросить настройки (оставить загрузку с флешки)');
+		
+		
 
         var updateUI = function(status, devices) {
             var isExtroot = (status.extroot === 'yes');
@@ -587,6 +598,12 @@ return view.extend({
 
             var getStateBtn = document.getElementById('btn-get-state');
             if (getStateBtn) getStateBtn.disabled = false;
+			
+			            var resetBtnEl = document.getElementById('btn-factory-reset');
+            if (resetBtnEl) {
+                resetBtnEl.style.display = isExtroot ? 'block' : 'none';
+            }
+			
         };
 
         self._updateUI = updateUI;
@@ -673,12 +690,7 @@ return view.extend({
         ]);
 
 
-
-
-
-
-
-        return E([], [
+	        return E([], [
             E('h2', {}, [
                 'USB extroot',
                 ver ? E('span', { 'style': 'margin-left:12px;font-size:14px;font-weight:normal;color:#888;' }, ver) : ''
@@ -686,8 +698,12 @@ return view.extend({
             E('p', {}, 'Перенос overlay OpenWrt на USB-накопитель.'),
             controls,
             E('h3', {}, 'Журнал выполнения'),
-            logPre
+            logPre,
+            btnFactoryReset
         ]);
+	
+	
+	
     },
 
     runBackupManual: function(logPre) {
@@ -846,7 +862,9 @@ return view.extend({
         else if (mode === 'restore') descEl = E('p', pStyle, 'Загрузка будет переключена на внутреннюю память.');
         else if (mode === 'fallback_fix') descEl = E('p', pStyle, 'Будет очищен fstab.extroot и создан /overlay.');
         else if (mode === 'restore_archive') descEl = E('p', pStyle, 'Восстановление из архива ' + archive);
-
+        else if (mode === 'reset_keep_extroot') {
+            descEl = E('p', pStyle, 'ВНИМАНИЕ: Все настройки будут сброшены. Система продолжит загружаться с текущей флешки, но конфигурация станет заводской. Бэкапы на флешке сохранятся.');
+        }
         var code = genConfirmCode();
         var codeInput = E('input', { 'type': 'text', 'maxlength': '4', 'style': 'font-size:16px;width:60px;text-align:center;padding:4px;' });
 
