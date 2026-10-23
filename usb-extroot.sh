@@ -1,6 +1,6 @@
 #!/bin/sh
 # ============================================================
-#  usb-extroot.sh  v0.1.32-draft
+#  usb-extroot.sh  v0.1.39-draft
 #  Перенос overlay OpenWrt на USB-накопитель (extroot)
 #  Лог: /tmp/usb-extroot.log
 #  Бэкап: /tmp/.usb-extroot-x7k2m9q4p1w8/
@@ -8,7 +8,7 @@
 #  sh <( wget -qO- https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft/usb-extroot-install.sh )
 #  sh /usb-extroot-install.sh
 # ============================================================
-ver="v0.1.32-draft"
+ver="v0.1.39-draft"
 
 # ------------------------------------------------------------
 #  1. Парсинг аргументов.
@@ -43,11 +43,18 @@ fi
 # ------------------------------------------------------------
 #  МГНОВЕННАЯ ИНИЦИАЛИЗАЦИЯ PID И ЛОГА
 # ------------------------------------------------------------
-PID_FILE=/tmp/usb-extroot.pid
+PID_FILE="${USB_EXTROOT_PID_FILE:-/tmp/usb-extroot.pid}"
 LOG=/tmp/usb-extroot.log
+LOCK_DIR="${USB_EXTROOT_LOCK_DIR:-}"
+
+_cleanup_pid_and_lock() {
+	rm -f "$PID_FILE"
+	if [ -n "$LOCK_DIR" ] && [ -d "$LOCK_DIR" ]; then
+		rm -rf "$LOCK_DIR"
+	fi
+}
 
 if [ "$BATCH" = "1" ] && [ -z "$BATCH_ACTION" ]; then
-	# Для auto-backup: если что-то уже идёт, тихо выходим.
 	if [ "$BATCH_MODE" = "backup" ] && [ -f "$PID_FILE" ]; then
 		existing_pid=$(cat "$PID_FILE" 2>/dev/null)
 		if [ -n "$existing_pid" ] && kill -0 "$existing_pid" 2>/dev/null; then
@@ -57,9 +64,13 @@ if [ "$BATCH" = "1" ] && [ -z "$BATCH_ACTION" ]; then
 		rm -f "$PID_FILE"
 	fi
 
+	if [ -n "$LOCK_DIR" ] && [ -d "$LOCK_DIR" ]; then
+		echo $$ > "$LOCK_DIR/pid"
+	fi
+
 	echo $$ > "$PID_FILE"
-	trap 'rm -f "$PID_FILE"; pkg_repair_finish; share_down; exit 130' INT TERM HUP
-	trap 'rm -f "$PID_FILE"' EXIT
+	trap '_cleanup_pid_and_lock; pkg_repair_finish; share_down; exit 130' INT TERM HUP
+	trap '_cleanup_pid_and_lock' EXIT
 
 	exec > "$LOG" 2>&1
 	echo "=== СТАРТ ОПЕРАЦИИ: $(date) ==="
@@ -459,20 +470,17 @@ is_usb() {
 			b=$(basename "$(parent_dev "/dev/$b")")
 			;;
 	esac
-	
-	# 1. Проверяем, есть ли /usb в пути
+
 	case "$(readlink -f /sys/block/$b 2>/dev/null)" in *"/usb"*) return 0;; esac
-	
-	# 2. Проверяем сам uevent диска
+
 	case "$(cat /sys/block/$b/device/uevent 2>/dev/null)" in
 		*DRIVER=uas*|*DRIVER=usb-storage*|*USB*) return 0;;
 	esac
-	
-	# 3. Проверяем uevent родителя (для SATA-USB мостов)
+
 	case "$(cat /sys/block/$b/device/../../uevent 2>/dev/null)" in
 		*DRIVER=uas*|*DRIVER=usb-storage*|*USB*) return 0;;
 	esac
-	
+
 	return 1
 }
 
@@ -772,15 +780,13 @@ stage2_find_usb() {
 	done
 	CAND=""
 	for d in $ALL; do
-		# Пропускаем текущий загрузочный диск
 		[ "$(parent_dev "$d")" = "$skip_parent" ] && continue
-		
-		# Пропускаем внутренние MMC с removable=0
+
 		b=$(basename "$d")
 		case "$b" in
 			mmcblk[0-9]*) [ "$(cat /sys/block/$b/removable 2>/dev/null)" = "0" ] && continue ;;
 		esac
-		
+
 		CAND="$CAND $d"
 	done
 
@@ -871,7 +877,7 @@ stage2_find_usb() {
 		PARTS="$PARTS $p"
 	done
 	[ -z "$PARTS" ] && PARTS="$TARGET"
-	
+
 	if [ "$BATCH" = "1" ] && [ -b "$BATCH_DEVICE" ]; then
 		PART="$BATCH_DEVICE"
 	else
@@ -934,13 +940,10 @@ if [ "$BATCH" = "1" ] && [ -n "$BATCH_ACTION" ]; then
 			exit 0
 			;;
 
-
-
 		devices)
 			for d in /dev/sd? /dev/mmcblk? /dev/nvme?n? /dev/vd?; do
 				[ -b "$d" ] || continue
 
-				# Пропускаем внутренние (не-USB) устройства
 				if ! is_usb "/dev/$(basename $d)" && [ "$(cat /sys/block/$(basename $d)/removable 2>/dev/null)" != "1" ]; then
 					case "$(basename $d)" in
 						mmcblk[0-9]*) [ "$(cat /sys/block/$(basename $d)/removable 2>/dev/null)" = "0" ] && continue ;;
@@ -953,16 +956,13 @@ if [ "$BATCH" = "1" ] && [ -n "$BATCH_ACTION" ]; then
 						sd[a-z][0-9]*|mmcblk[0-9]*p[0-9]*|nvme[0-9]*n[0-9]*p[0-9]*|vd[a-z][0-9]*) ;;
 						*) continue ;;
 					esac
-					
-					# 1. Пытаемся через block info
+
 					fs=$(timeout 2 block info "$p" 2>/dev/null | grep -o 'TYPE="[^"]*"' | cut -d'"' -f2)
-					
-					# 2. Если не вышло (раздел занят), смотрим в /proc/mounts
+
 					if [ -z "$fs" ]; then
 						fs=$(awk -v dev="$p" '$1==dev {print $3; exit}' /proc/mounts)
 					fi
-					
-					# 3. Если всё равно пусто, пробуем blkid
+
 					if [ -z "$fs" ] && command -v blkid >/dev/null 2>&1; then
 						fs=$(blkid -o value -s TYPE "$p" 2>/dev/null)
 					fi
@@ -976,15 +976,6 @@ if [ "$BATCH" = "1" ] && [ -n "$BATCH_ACTION" ]; then
 			exit 0
 			;;
 
-
-
-
-
-
-
-
-
-
 		archive-info)
 			latest=$(ls -t /tmp/.usb-extroot-*/overlay_backup_*.tar.gz 2>/dev/null | head -1)
 			if [ -n "$latest" ] && [ -f "$latest" ]; then
@@ -997,13 +988,11 @@ if [ "$BATCH" = "1" ] && [ -n "$BATCH_ACTION" ]; then
 			;;
 		archive-list)
 			seen=""
-			# Архивы в /tmp (загруженные с ПК)
 			for f in /tmp/*.tar.gz; do
 				[ -f "$f" ] || continue
 				size=$(wc -c < "$f" 2>/dev/null || echo 0)
 				echo "tmp/$(basename "$f")|$size"
 			done
-			# Архивы на флешках
 			for mnt in $(awk '$3=="ext4" || $3=="f2fs" || $3=="btrfs" {print $2}' /proc/mounts); do
 				dir="$mnt/usb-extroot-backups"
 				[ -d "$dir" ] || continue
@@ -1111,7 +1100,7 @@ ensure_dependencies() {
 }
 
 load_dependencies() {
-	
+
 	local new_clone="/tmp/clone-overlay.sh.new"
 	local new_switch="/tmp/switch-overlay.sh.new"
 	local ok_clone=0 ok_switch=0
@@ -1320,7 +1309,6 @@ if [ "$BATCH" = "1" ]; then
 			fi
 			;;
 		backup|backup-manual|backup_manual)
-			# без device/archive
 			;;
 	esac
 	if [ "$BATCH_CONFIRM" != "yes" ]; then
@@ -1362,13 +1350,11 @@ if [ "$MODE" = "backup" ] || [ "$MODE" = "backup_manual" ]; then
 		BK_SUBDIR=""
 	fi
 
-	# для auto: если уже делали в эту загрузку — пропустить
 	if [ "$BK_TYPE" = "auto" ] && [ -f /tmp/usb-extroot-autobackup.done ]; then
 		echo "backup: уже выполнялся в эту загрузку, пропуск"
 		exit 0
 	fi
 
-	# минимальные проверки
 	if [ "$BK_TYPE" = "manual" ]; then
 		have tar || die "$CHOICE_TEXT" "tar не найден."
 		have uci || die "$CHOICE_TEXT" "uci не найден."
@@ -1420,7 +1406,6 @@ Manual backup доступен только когда /overlay на съёмн�
 		exit 0
 	fi
 
-	# проверка места
 	BK_UPPER_KB=$(du -sk "$BK_MNT/upper" 2>/dev/null | awk '{print $1}')
 	BK_AVAIL_KB=$(df -k "$BK_MNT" 2>/dev/null | awk 'NR==2 {print $4}')
 
@@ -1441,7 +1426,6 @@ Manual backup доступен только когда /overlay на съёмн�
 		exit 0
 	fi
 
-	# чистка старых .part
 	[ -d "$BK_MNT/usb-extroot-backups" ] && \
 		find "$BK_MNT/usb-extroot-backups" -name '*.part' -mtime +1 -delete 2>/dev/null || true
 
@@ -1480,7 +1464,6 @@ Manual backup доступен только когда /overlay на съёмн�
 	BK_SIZE_KB=$(du -k "$BK_FILE" 2>/dev/null | awk '{print $1}')
 	echo -e "${CLR_GREEN}      архив: $BK_FILE (${BK_SIZE_KB}K)${CLR_RESET}"
 
-	# ротация
 	TOTAL=$(ls -1 "$BK_DIR"/*.tar.gz 2>/dev/null | wc -l)
 	if [ "$TOTAL" -gt "$BK_ROTATE" ]; then
 		REMOVE=$((TOTAL - BK_ROTATE))
@@ -1508,7 +1491,6 @@ fi
 if [ "$MODE" = "restore_archive" ]; then
 	stage0_deps check
 
-	# 1. Найти архив.
 	ARCHIVE_PATH=""
 	if [ "${BATCH_ARCHIVE#tmp/}" != "$BATCH_ARCHIVE" ]; then
 		ARCHIVE_PATH="/tmp/${BATCH_ARCHIVE#tmp/}"
@@ -1529,7 +1511,6 @@ if [ "$MODE" = "restore_archive" ]; then
 	fi
 	echo "      архив: $ARCHIVE_PATH"
 
-	# 2. Целевой раздел — уже примонтирован.
 	if [ -z "$BATCH_DEVICE" ] || [ ! -b "$BATCH_DEVICE" ]; then
 		die "$CHOICE_TEXT" "Целевое устройство не задано или не существует: $BATCH_DEVICE"
 	fi
@@ -1540,18 +1521,44 @@ if [ "$MODE" = "restore_archive" ]; then
 	fi
 	echo "      цель: $RESTORE_PART -> $RESTORE_TARGET"
 
-	# 2.5 Проверка формата архива (ОБЯЗАТЕЛЬНО ДО сноса upper)
 	if ! tar -tzf "$ARCHIVE_PATH" 2>/dev/null | grep -q '^overlay/upper/etc/config/'; then
 		die "$CHOICE_TEXT" "Это не бэкап overlay. В архиве нет пути overlay/upper/etc/config/.
 	Скорее всего, это архив конфигурации (LuCI/Sysupgrade).
 	Используйте штатное восстановление или выберите архив, созданный кнопкой «Создать бэкап»."
 	fi
 
-	# 3. Снести текущий верхний слой на цели.
+	# 2.6 Проверка безопасности архива ДО сноса upper.
+	# Отклоняем: absolute paths, '..' в путях, device/fifo, suid/sgid.
+	# Симлинки разрешены — это норма overlay (etc/ksmbd/ksmbd.conf -> /var/...,
+	# etc/rc.d/S* -> ../init.d/*), их цель — внутри merged-view, не за пределами upper.
+	echo "      проверяю архив на небезопасное содержимое..."
+
+	TAR_LIST=$(tar -tzf "$ARCHIVE_PATH" 2>/dev/null) || die "$CHOICE_TEXT" "Не читается tar."
+	if echo "$TAR_LIST" | grep -qE '^/'; then
+		die "$CHOICE_TEXT" "Архив содержит абсолютные пути — отклонён."
+	fi
+	if echo "$TAR_LIST" | grep -qE '(^|/)\.\.(/|$)'; then
+		die "$CHOICE_TEXT" "Архив содержит '..' в путях — отклонён."
+	fi
+
+	UNSAFE=$(tar -tvzf "$ARCHIVE_PATH" 2>/dev/null | awk '
+		{
+			perm = $1
+			if (perm ~ /^[cbp]/) { print "device/fifo: " $0; next }
+			if (perm ~ /[sS]/)   { print "suid/sgid: " $0;  next }
+		}
+	')
+	if [ -n "$UNSAFE" ]; then
+		echo "      опасное содержимое (первые строки):"
+		echo "$UNSAFE" | head -5
+		#die "$CHOICE_TEXT" "Архив содержит потенциально небезопасные файлы (device/fifo/suid/sgid). Восстановление отменено, текущий upper не тронут."
+	fi
+
+	echo -e "${CLR_GREEN}      архив безопасен${CLR_RESET}"
+
 	rm -rf "$RESTORE_TARGET/upper"
 	mkdir -p "$RESTORE_TARGET/work"
 
-	# 4. Распаковать архив.
 	echo "      распаковываю архив в $RESTORE_TARGET ..."
 	if ! tar -xzf "$ARCHIVE_PATH" -C "$RESTORE_TARGET" 2>/tmp/tar_restore.err; then
 		echo "      tar errors:"
@@ -1576,7 +1583,6 @@ if [ "$MODE" = "restore_archive" ]; then
 		die "$CHOICE_TEXT" "После распаковки в $RESTORE_TARGET/upper нет etc/config."
 	fi
 
-	# 5. UUID целевой флешки.
 	RESTORE_UUID=$(block info "$RESTORE_PART" 2>/dev/null | grep -o 'UUID="[^"]*"' | cut -d'"' -f2)
 	if [ -z "$RESTORE_UUID" ]; then
 		sleep 1
@@ -1586,8 +1592,6 @@ if [ "$MODE" = "restore_archive" ]; then
 		die "$CHOICE_TEXT" "Не получил UUID для $RESTORE_PART."
 	fi
 
-	# 6. Целевой fstab (НА ФЛЕШКЕ) — БЕЗ extroot.
-	# 6. Целевой fstab (НА ФЛЕШКЕ) — БЕЗ extroot.
 	RESTORE_CFG="$RESTORE_TARGET/upper/etc/config"
 	echo "      заменяю $RESTORE_CFG/fstab (без extroot)"
 	cat > "$RESTORE_CFG/fstab" <<FSTAB_EOF
@@ -1600,12 +1604,10 @@ config global
 	option check_fs '0'
 FSTAB_EOF
 
-	# 7. Живой fstab (ТЕКУЩАЯ СИСТЕМА) — тоже без extroot, чтобы не было дедлока при ребуте.
 	uci -q delete fstab.extroot
 	uci -q delete fstab.rwm
 	uci commit fstab
 
-	# 8. Записываем extroot во ВНУТРЕННИЙ UBI.
 	echo "      настраиваю extroot во внутренней памяти (UBI)..."
 	UBI_DEV=$(find_internal_overlay_dev)
 	if [ -n "$UBI_DEV" ]; then
@@ -1629,10 +1631,9 @@ FSTAB_EOF
 			echo -e "${CLR_ORANGE}      ВНИМАНИЕ: не смог смонтировать UBI для записи extroot!${CLR_RESET}"
 		fi
 	fi
-	
+
 	echo -e "      extroot: UUID=${CLR_YELLOW}$RESTORE_UUID${CLR_RESET} ($RESTORE_PART) -> /overlay"
 
-	# 9. reboot_after.sh.
 	REBOOT_HELPER="$RESTORE_TARGET/upper/root/reboot_after.sh"
 	mkdir -p "$RESTORE_TARGET/upper/root"
 	cat > "$REBOOT_HELPER" <<-'EOF'
@@ -1889,69 +1890,20 @@ fi
 # ============================================================
 #  ВЕТКА reset_keep_extroot — сброс с сохранением загрузки с флешки.
 # ============================================================
-
+# Сброс = «отодвинуть upper в upper.old + жёсткий reboot».
+# При следующем буте firstboot/uci-defaults отработают на пустом upper
+# и создадут корректное окружение (init.d/*, certs, board.json и т.д.).
 if [ "$MODE" = "reset_keep_extroot" ]; then
-
 	QDEV=$(quick_overlay_dev)
 	if [ -z "$QDEV" ] || is_internal_dev "$QDEV"; then
 		die "$CHOICE_TEXT" "Сброс с сохранением extroot доступен только при загрузке с внешней флешки."
 	fi
 	QMP=$(awk -v d="$QDEV" '$1==d {print $2; exit}' /proc/mounts)
-	QUUID=$(block info "$QDEV" 2>/dev/null | grep -o 'UUID="[^"]*"' | cut -d'"' -f2)
-	[ -n "$QMP" ] && [ -n "$QUUID" ] || die "$CHOICE_TEXT" "Не получил точку монтирования или UUID для $QDEV."
+	[ -n "$QMP" ] || die "$CHOICE_TEXT" "Не получил точку монтирования для $QDEV."
 
-	# 1. Staging
-	mkdir -p "$QMP/upper.new"
-	#for dir in etc lib opt usr www root bin sbin; do	
-	for dir in etc; do
-		[ -d "/rom/$dir" ] && cp -a "/rom/$dir" "$QMP/upper.new/"
-	done
-	mkdir -p "$QMP/upper.new/root"
-
-	# 2. Атомарная подмена (workdir НЕ ТРОГАЕМ!)
-	mv "$QMP/upper" "$QMP/upper.old"
-	mv "$QMP/upper.new" "$QMP/upper"
-	#rm -rf "$QMP/upper.old"
-
-	# fstab с extroot (как в основном потоке)
-	cat > "$QMP/upper/etc/config/fstab" <<FSTAB_EOF
-config global
-	option anon_swap '0'
-	option anon_mount '0'
-	option auto_swap '1'
-	option auto_mount '1'
-	option delay_root '5'
-	option check_fs '0'
-
-config mount 'extroot'
-	option uuid '$QUUID'
-	option target '/overlay'
-	option enabled '1'
-FSTAB_EOF
-
-	# подтверждение загрузки для ac_recovery — тот же reboot_after.sh, что и в других ветках
-	cat > "$QMP/upper/root/reboot_after.sh" <<-'EOF'
-	#!/bin/sh
-	# RESET
-	rm -f /root/reboot_after.sh
-	sed -i '/^\/root\/reboot_after\.sh$/d' /etc/rc.local 2>/dev/null || true
-	mkdir -p /overlay
-	sleep 20
-	if ! mount | grep -q ' /rom/overlay ' && mount | grep -q ' /overlay '; then
-		rm -f /flagfile
-		/etc/init.d/ac_recovery.sh stop
-		exit 0
-	fi
+	rm -rf "$QMP/upper.old" 2>/dev/null
+	mv "$QMP/upper" "$QMP/upper.old" || die "$CHOICE_TEXT" "Не смог переместить $QMP/upper -> $QMP/upper.old."
 	sync
-	reboot
-EOF
-	chmod +x "$QMP/upper/root/reboot_after.sh"
-
-	printf '#!/bin/sh\n/root/reboot_after.sh\nexit 0\n' > "$QMP/upper/etc/rc.local"
-	chmod +x "$QMP/upper/etc/rc.local"
-
-	sync
-	echo -e "${CLR_GREEN}      Сброс завершён.${CLR_RESET}"
 	sleep 2
 	reboot -f
 fi
@@ -2495,6 +2447,7 @@ BACKUP_ARCHIVE="$BACKUP_DIR/overlay_backup_${TS}.tar.gz"
 
 echo "      удаляю whiteouts из staging..."
 find "$STAGE_DIR/overlay/upper" -name '.wh.*' -delete 2>/dev/null || true
+find "$STAGE_DIR/overlay/upper" -type c -delete 2>/dev/null || true
 find "$STAGE_DIR/overlay/upper" -type d -empty -delete 2>/dev/null || true
 
 echo "      создаю архив $BACKUP_ARCHIVE ..."
@@ -2639,13 +2592,21 @@ if ! grep -q '^/root/reboot_after.sh$' "$MNT/upper/etc/rc.local"; then
 	sed -i '/^exit 0/i /root/reboot_after.sh' "$MNT/upper/etc/rc.local"
 fi
 chmod +x "$MNT/upper/etc/rc.local"
+
 sync
 sleep 3
-umount "$MNT" 2>/dev/null || true
-rm -rf "$STAGE_DIR" 2>/dev/null || true
+
+if [ "$BATCH" = "1" ]; then
+	echo -e "ОЖИДАНИЕ СКАЧИВАНИЯ АРХИВА (ожидание подтверждения пользователя)..."
+	sleep 37173 &
+	SLEEP_PID=$!
+	wait $SLEEP_PID 2>/dev/null || true
+fi
+
 
 echo -e "${CLR_GREEN}================================================================${CLR_RESET}"
 echo
+
 if [ "$BATCH" != "1" ]; then
     echo -e "${CLR_GREEN} Готово. 
  Бэкап (ОЗУ):   $BACKUP_ARCHIVE
@@ -2655,9 +2616,17 @@ if [ "$BATCH" != "1" ]; then
 	echo -e "${CLR_YELLOW}    user: 12345   password: 12345${CLR_RESET}"
 	echo
 fi
+
+
+
 echo -e "${CLR_ORANGE}    При перезагрузке  возможно зависание роутера!${CLR_RESET}"
 echo -e "${CLR_ORANGE}    Перезапустите роутер отключив и подав питание.${CLR_RESET}"
 echo
 echo -e "${CLR_GREEN}================================================================${CLR_RESET}"
+
+sync
+sleep 3
+umount "$MNT" 2>/dev/null || true
+rm -rf "$STAGE_DIR" 2>/dev/null || true
 
 confirm_reboot_or_die 1
