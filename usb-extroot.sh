@@ -9,6 +9,7 @@
 #  sh /usb-extroot-install.sh
 # ============================================================
 ver="v0.1.41.03-draft"
+SRC_BASE="https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft" #/main"
 TEST_MODE=1
 
 # ------------------------------------------------------------
@@ -1048,7 +1049,6 @@ fi
 # ============================================================
 #  Подтягивание модулей
 # ============================================================
-SRC_BASE="https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/main"
 
 _dep_looks_valid() {
 	local f="$1" marker="$2"
