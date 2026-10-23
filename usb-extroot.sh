@@ -1,6 +1,6 @@
 #!/bin/sh
 # ============================================================
-#  usb-extroot.sh  v0.1.40-draft
+#  usb-extroot.sh  v0.1.41-draft
 #  Перенос overlay OpenWrt на USB-накопитель (extroot)
 #  Лог: /tmp/usb-extroot.log
 #  Бэкап: /tmp/.usb-extroot-x7k2m9q4p1w8/
@@ -8,7 +8,7 @@
 #  sh <( wget -qO- https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft/usb-extroot-install.sh )
 #  sh /usb-extroot-install.sh
 # ============================================================
-ver="v0.1.40-draft"
+ver="v0.1.41-draft"
 
 # ------------------------------------------------------------
 #  1. Парсинг аргументов.
@@ -2507,6 +2507,7 @@ if [ "$BATCH" != "1" ]; then
 	echo
 else
 	echo "      архив готов для скачивания через веб-интерфейс"
+	echo -e "      \033[38;2;17;17;17mEXTROOT_READY_CODE_777888\033[0m\n"
 fi
 
 echo
