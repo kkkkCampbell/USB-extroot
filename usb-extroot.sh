@@ -1,6 +1,6 @@
 #!/bin/sh
 # ============================================================
-#  usb-extroot.sh  v0.1.41.02-draft
+#  usb-extroot.sh  v0.1.41.03-draft
 #  Перенос overlay OpenWrt на USB-накопитель (extroot)
 #  Лог: /tmp/usb-extroot.log
 #  Бэкап: /tmp/.usb-extroot-x7k2m9q4p1w8/
@@ -8,7 +8,8 @@
 #  sh <( wget -qO- https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft/usb-extroot-install.sh )
 #  sh /usb-extroot-install.sh
 # ============================================================
-ver="v0.1.41.02-draft"
+ver="v0.1.41.03-draft1"
+TEST_MODE=1
 
 # ------------------------------------------------------------
 #  1. Парсинг аргументов.
@@ -80,7 +81,7 @@ fi
 #  2. Самопереезд в RAM.
 # ------------------------------------------------------------
 path="/opt/usb-extroot"
-TEST_MODE=0
+TEST_MODE="${TEST_MODE:-0}"
 if [ ! -d "/opt/usb-extroot" ]; then mkdir -p "/opt/usb-extroot"; fi
 
 case "$0" in
@@ -976,6 +977,18 @@ if [ "$BATCH" = "1" ] && [ -n "$BATCH_ACTION" ]; then
 			exit 0
 			;;
 
+		switch-targets)
+			ensure_dependencies
+			if command -v switch_overlay_scan_targets >/dev/null 2>&1; then
+				list=$(switch_overlay_scan_targets 2>/dev/null)
+				if [ -n "$list" ] && [ -f "$list" ]; then
+					cat "$list"
+					rm -f "$list"
+				fi
+			fi
+			exit 0
+			;;
+
 		archive-info)
 			latest=$(ls -t /tmp/.usb-extroot-*/overlay_backup_*.tar.gz 2>/dev/null | head -1)
 			if [ -n "$latest" ] && [ -f "$latest" ]; then
@@ -1268,7 +1281,7 @@ mount_removable_all() {
 
 echo
 
-if [ "$BATCH" = "1" ] && { [ -n "$BATCH_ACTION" ] || [ "$BATCH_MODE" = "reset_keep_extroot" ] || [ "$BATCH_MODE" = "restore" ] || [ "$BATCH_MODE" = "fallback-fix" ] || [ "$BATCH_MODE" = "restore_archive" ] || [ "$BATCH_MODE" = "backup" ] || [ "$BATCH_MODE" = "backup_manual" ]; }; then
+if [ "$BATCH" = "1" ] && { [ -n "$BATCH_ACTION" ] || [ "$BATCH_MODE" = "reset_keep_extroot" ] || [ "$BATCH_MODE" = "restore" ] || [ "$BATCH_MODE" = "fallback-fix" ] || [ "$BATCH_MODE" = "restore_archive" ] || [ "$BATCH_MODE" = "backup" ] || [ "$BATCH_MODE" = "backup_manual" ] || [ "$BATCH_MODE" = "switch_overlay" ]; }; then
 	echo "      (режим $BATCH_ACTION $BATCH_MODE: пропускаю сканирование USB)"
 else
 	echo
@@ -1285,7 +1298,7 @@ if [ "$BATCH" = "1" ]; then
 		exit 2
 	fi
 	case "$BATCH_MODE" in
-		format|noformat|restore|fallback-fix|fallback_fix|restore_archive|backup|backup-manual|backup_manual|reset_keep_extroot) ;;
+		format|noformat|restore|fallback-fix|fallback_fix|restore_archive|backup|backup-manual|backup_manual|reset_keep_extroot|switch_overlay) ;;
 		*)
 			echo "ERROR: неизвестный --mode='$BATCH_MODE'" >&2
 			exit 2
@@ -1308,6 +1321,12 @@ if [ "$BATCH" = "1" ]; then
 				exit 2
 			fi
 			;;
+		switch_overlay)
+			if [ -z "$BATCH_DEVICE" ]; then
+				echo "ERROR: --device не указан для mode=$BATCH_MODE" >&2
+				exit 2
+			fi
+			;;
 		backup|backup-manual|backup_manual)
 			;;
 	esac
@@ -1317,14 +1336,15 @@ if [ "$BATCH" = "1" ]; then
 	fi
 	MODE=$(echo "$BATCH_MODE" | tr '-' '_')
 	case "$MODE" in
-		format)          CHOICE_TEXT="форматировать и перенести" ;;
-		noformat)        CHOICE_TEXT="перенести без форматирования" ;;
-		restore)         CHOICE_TEXT="восстановить загрузку с внутренней памяти" ;;
-		fallback_fix)    CHOICE_TEXT="исправить аварийный режим" ;;
-		restore_archive) CHOICE_TEXT="восстановление из архива" ;;
-		backup)          CHOICE_TEXT="автобэкап" ;;
-		backup_manual)   CHOICE_TEXT="ручной бэкап" ;;
+		format)             CHOICE_TEXT="форматировать и перенести" ;;
+		noformat)           CHOICE_TEXT="перенести без форматирования" ;;
+		restore)            CHOICE_TEXT="восстановить загрузку с внутренней памяти" ;;
+		fallback_fix)       CHOICE_TEXT="исправить аварийный режим" ;;
+		restore_archive)    CHOICE_TEXT="восстановление из архива" ;;
+		backup)             CHOICE_TEXT="автобэкап" ;;
+		backup_manual)      CHOICE_TEXT="ручной бэкап" ;;
 		reset_keep_extroot) CHOICE_TEXT="сброс к заводским с сохранением загрузки с флэшки" ;;
+		switch_overlay)     CHOICE_TEXT="смена загрузочного накопителя" ;;
 	esac
 	echo
 	echo "============================================================"
@@ -1332,6 +1352,26 @@ if [ "$BATCH" = "1" ]; then
 	[ -n "$BATCH_DEVICE" ] && echo "  device=$BATCH_DEVICE"
 	[ -n "$BATCH_ARCHIVE" ] && echo "  archive=$BATCH_ARCHIVE"
 	echo "============================================================"
+fi
+
+# ============================================================
+#  ВЕТКА switch_overlay — смена загрузочного накопителя (4-1)
+# ============================================================
+if [ "$MODE" = "switch_overlay" ]; then
+	ensure_dependencies
+	if [ -z "$BATCH_DEVICE" ]; then
+		die "$CHOICE_TEXT" "Целевое устройство для переключения не задано."
+	fi
+	SWITCH_DST_DEV="$BATCH_DEVICE"
+	echo "      переключение загрузочного накопителя на: $SWITCH_DST_DEV"
+	
+	if ! switch_overlay_apply; then
+		die "$CHOICE_TEXT" "Ошибка при применении переключения оверлея."
+	fi
+	
+	echo -e "${CLR_GREEN}      Переключение успешно. Перезагрузка...${CLR_RESET}"
+	confirm_reboot_or_die 0
+	exit 0
 fi
 
 # ============================================================
@@ -1559,7 +1599,6 @@ if [ "$MODE" = "restore_archive" ]; then
 	if [ -n "$UNSAFE" ]; then
 		echo "      опасное содержимое (первые строки):"
 		echo "$UNSAFE" | head -5
-		#die "$CHOICE_TEXT" "Архив содержит потенциально небезопасные файлы (device/fifo/suid/sgid). Восстановление отменено, текущий upper не тронут."
 	fi
 
 	echo -e "${CLR_GREEN}      архив безопасен${CLR_RESET}"
@@ -1898,9 +1937,6 @@ fi
 # ============================================================
 #  ВЕТКА reset_keep_extroot — сброс с сохранением загрузки с флешки.
 # ============================================================
-# Сброс = «отодвинуть upper в upper.old + жёсткий reboot».
-# При следующем буте firstboot/uci-defaults отработают на пустом upper
-# и создадут корректное окружение (init.d/*, certs, board.json и т.д.).
 if [ "$MODE" = "reset_keep_extroot" ]; then
 	QDEV=$(quick_overlay_dev)
 	if [ -z "$QDEV" ] || is_internal_dev "$QDEV"; then
