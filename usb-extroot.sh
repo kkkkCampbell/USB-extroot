@@ -10,7 +10,7 @@
 # ============================================================
 ver="v0.1.41.03-draft"
 SRC_BASE="https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft" #/main"
-TEST_MODE=1
+TEST_MODE=0
 
 # ------------------------------------------------------------
 #  1. Парсинг аргументов.
