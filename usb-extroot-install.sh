@@ -825,7 +825,16 @@ return view.extend({
                     statusText.textContent = 'Загрузка... (' + Math.round(file.size / 1024) + ' KB)';
                     progressBar.style.display = 'block';
                     var xhr = new XMLHttpRequest();
-                    xhr.open('POST', '/cgi-bin/usb-extroot-upload?file=' + encodeURIComponent(file.name), true);
+                    
+					
+					var uploadUrl = '/cgi-bin/usb-extroot-upload?file=' + encodeURIComponent(file.name);
+if (writeToken) {
+    uploadUrl += '&token=' + encodeURIComponent(writeToken);
+}
+xhr.open('POST', uploadUrl, true);
+					
+					
+					
                     xhr.setRequestHeader('Content-Type', 'application/octet-stream');
                     xhr.setRequestHeader('X-Extroot-Token', writeToken);
                     xhr.upload.onprogress = function(e) {
@@ -837,7 +846,7 @@ return view.extend({
                     };
                     xhr.onload = function() {
                         if (xhr.status >= 200 && xhr.status < 300) {
-                            statusText.textContent = 'Успешно загружено! Файл доступен в списке.';
+                            statusText.textContent = 'Успешно загружено на флэшку! Теперь файл доступен в списке архивов.';
                             statusText.style.color = '#32cd32';
                             progressBar.firstChild.style.background = '#32cd32';
                             ui.addNotification(null, E('p', {}, 'Архив загружен.'), 'info');
@@ -1191,14 +1200,44 @@ case "$REMOTE" in
     *) echo "Status: 403 Forbidden"; echo; echo "Forbidden."; exit 0 ;;
 esac
 
+
+
+
+
+
+
+
+
+
 EXPECTED_WRITE=$(uci -q get usb-extroot.main.write_token 2>/dev/null)
 if [ -z "$EXPECTED_WRITE" ]; then
     echo "Status: 503 Service Unavailable"; echo; echo "no write_token configured"
     exit 0
 fi
-if [ "$HTTP_X_EXTROOT_TOKEN" != "$EXPECTED_WRITE" ]; then
+
+REQ_TOKEN=""
+[ -n "$HTTP_X_EXTROOT_TOKEN" ] && REQ_TOKEN="$HTTP_X_EXTROOT_TOKEN"
+
+[ -n "$QUERY_STRING" ] && for pair in $(echo "$QUERY_STRING" | tr '&' ' '); do
+    case "$pair" in
+        token=*) REQ_TOKEN="${pair#token=}" ;;
+    esac
+done
+
+if [ "$REQ_TOKEN" != "$EXPECTED_WRITE" ]; then
     echo "Status: 403 Forbidden"; echo; echo "Bad token"; exit 0
 fi
+
+
+
+
+
+
+
+
+
+
+
 
 FILE=""
 [ -n "$QUERY_STRING" ] && for pair in $(echo "$QUERY_STRING" | tr '&' ' '); do
