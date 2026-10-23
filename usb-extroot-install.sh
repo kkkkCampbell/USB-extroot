@@ -3,7 +3,7 @@
 #  usb-extroot-install.sh  — установщик usb-extroot + веб-морда
 #  sh <( wget -qO- https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft/usb-extroot-install.sh )
 # ============================================================
-TEST_MODE=1
+TEST_MODE=0
 BASE_DIR="/opt/usb-extroot"
 
 die() { echo "ОШИБКА: $1" >&2; exit 1; }
