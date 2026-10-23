@@ -1,7 +1,7 @@
 #!/bin/sh
 # ============================================================
 #  usb-extroot-install.sh  — установщик usb-extroot + веб-морда
-#  sh <( wget -qO- https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft/usb-extroot-install.sh )
+#  sh <( wget -qO- https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/main/usb-extroot-install.sh )
 # ============================================================
 TEST_MODE=0
 BASE_DIR="/opt/usb-extroot"
@@ -44,7 +44,7 @@ fi
 
 
 if [ "$TEST_MODE" != "1" ]; then
-	SRC="https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft"
+	SRC="https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/main"
 	echo "==> Скачиваю usb-extroot.sh..."
 	if ! wget -qO "$BASE_DIR/usb-extroot.sh" "$SRC/usb-extroot.sh"; then
 		if ! curl -fsSL "$SRC/usb-extroot.sh" -o "$BASE_DIR/usb-extroot.sh"; then
