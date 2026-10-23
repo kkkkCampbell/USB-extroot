@@ -1,4 +1,4 @@
-# USB-extroot (v0.1.19)
+# USB-extroot (v0.1.41)
 
 Перенос overlay OpenWrt на USB-накопитель (extroot) с поддержкой отката.  
 Увеличивает объём доступной ROM до объёма USB-накопителя.  
@@ -6,16 +6,26 @@
 
 <img width="846" height="658" alt="mem" src="https://github.com/user-attachments/assets/5df573ca-5672-4e28-9ab3-6dc15324ea27" />
 
-## Запуск скрипта  
-  
 ПЕРЕД ПЕРЕНОСОМ СБРОС РОУТЕРА ДО НАСТРОЕК ПО УМОЛЧАНИЮ НЕ ТРЕБУЕТСЯ!  
+
+## Запуск скрипта  
   
 Скопировать и вставить в терминал ссылку.  
 Нажать Ввод.
+```
+    sh <( wget -qO- https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/main/usb-extroot.sh )
+```
+## Установка web-интерфейса и скрипта  
+Скопировать и вставить в терминал ссылку.  
+Нажать Ввод.
 
-    sh <(wget -qO- https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/main/usb-extroot.sh)
+```
+    sh <( wget -qO- https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/main/usb-extroot-install.sh )
+```
 
-Меню:
+WEB-интерфейс доступен в Службы - USB extroot  
+
+Меню скрипта в терминале:
 
     1) форматировать и перенести overlay на USB-носитель
     2) перенести без форматирования (удалить overlay-структуру)
@@ -63,7 +73,7 @@
 
 ## Версия
 
-v0.1.19
+v0.1.41
 
 ## Лицензия
 
