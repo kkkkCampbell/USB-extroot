@@ -309,6 +309,49 @@ method_devices() {
     printf '] }\n'
 }
 
+# --- Автономное сканирование доступных оверлеев с фильтрацией дублей и красивым описанием ---
+method_switch_targets() {
+    local first=1 dev mp size_mb size_gb desc parent_name
+    printf '{ "result": ['
+    
+    # Собираем уникальные устройства, исключая дубликаты монтирования
+    for dev in $(awk '$3=="ext4" || $3=="f2fs" || $3=="btrfs" {print $1}' /proc/mounts 2>/dev/null | awk '!seen[$0]++'); do
+        case "$dev" in
+            /dev/ubi*|/dev/mtdblock*|/dev/root) continue ;;
+        esac
+        
+        mp=$(awk -v d="$dev" '$1==d {print $2; exit}' /proc/mounts 2>/dev/null)
+        [ -n "$mp" ] || continue
+        
+        if [ -d "$mp/upper/etc/config" ] || [ -d "$mp/etc/config" ]; then
+            size_mb=$(df -m "$mp" 2>/dev/null | awk 'NR==2 {print $2}')
+            parent_name=$(basename "$(parent_dev "$dev")")
+            
+            # Красивое форматирование размера для человека
+            if [ -n "$size_mb" ] && [ "$size_mb" -gt 1024 ]; then
+                size_gb=$(awk "BEGIN {printf \"%.1f\", $size_mb/1024}")
+                size_str="${size_gb} ГБ"
+            else
+                size_str="${size_mb:-?} МБ"
+            fi
+            
+            desc="Раздел $dev ($size_str, диск $parent_name)"
+            
+            if [ "$first" = "1" ]; then
+                first=0
+            else
+                printf ","
+            fi
+            
+            dev_esc=$(printf '%s' "$dev" | sed 's/\\/\\\\/g; s/"/\\"/g')
+            desc_esc=$(printf '%s' "$desc" | sed 's/\\/\\\\/g; s/"/\\"/g')
+            printf '{"dev":"%s","desc":"%s"}' "$dev_esc" "$desc_esc"
+        fi
+    done
+    
+    printf '] }\n'
+}
+
 method_log() {
     local chunk=""
     [ -f "$LOG" ] && chunk=$(cat "$LOG" 2>/dev/null)
@@ -399,23 +442,26 @@ method_run() {
     if [ "$confirm" != "yes" ]; then _fail "confirm required"; return; fi
 
     case "$mode" in
-        format|noformat|restore|fallback_fix|restore_archive|backup|backup_manual|reset_keep_extroot) ;;
+        format|noformat|restore|fallback_fix|restore_archive|backup|backup_manual|reset_keep_extroot|switch_overlay) ;;
         *) _fail "invalid mode '$mode'"; return ;;
     esac
 
     case "$mode" in
-        format|noformat|restore_archive)
-            if [ -z "$device" ] || [ "${device#/dev/}" = "$device" ]; then
+        format|noformat|restore_archive|switch_overlay)
+            if [ -z "$device" ]; then
+                _fail "device required for $mode"; return
+            fi
+            if [ "$mode" != "switch_overlay" ] && [ "${device#/dev/}" = "$device" ]; then
                 _fail "invalid device '$device'"; return
             fi
-            if ! is_removable_storage "$device"; then
+            if [ "$mode" != "switch_overlay" ] && ! is_removable_storage "$device"; then
                 _fail "device '$device' is not removable (only USB/SD allowed)"; return
             fi
             ;;
     esac
 
     case "$mode" in
-        format|noformat)
+        format|noformat|switch_overlay)
             if [ -z "$device" ]; then _fail "device required for $mode"; return; fi
             archive=""
             ;;
@@ -456,13 +502,14 @@ method_run() {
 
 case "$1" in
     list)
-        echo '{ "status": {}, "devices": {}, "log": { "offset": 0 }, "archive_info": {}, "archive_list": {}, "version": {}, "api_read_token": {}, "api_write_token": {}, "abort_sleep": {}, "run": { "params": {} } }'
+        echo '{ "status": {}, "devices": {}, "switch_targets": {}, "log": { "offset": 0 }, "archive_info": {}, "archive_list": {}, "version": {}, "api_read_token": {}, "api_write_token": {}, "abort_sleep": {}, "run": { "params": {} } }'
         ;;
     call)
         method="$2"
         case "$method" in
             status)          method_status ;;
             devices)         method_devices ;;
+            switch_targets)  method_switch_targets ;;
             log)             method_log ;;
             archive_info)    method_archive_info ;;
             archive_list)    method_archive_list ;;
@@ -493,7 +540,7 @@ cat > "$BASE_DIR/acl.json" <<'ACL_EOF'
         "read": {
             "ubus": {
                 "luci.usb-extroot": [
-                    "status", "devices", "log", "archive_info", "archive_list",
+                    "status", "devices", "switch_targets", "log", "archive_info", "archive_list",
                     "version", "api_read_token"
                 ]
             }
@@ -537,6 +584,7 @@ cat > "$BASE_DIR/main.js" <<'VIEW_EOF'
 
 var callStatus = rpc.declare({ object: 'luci.usb-extroot', method: 'status' });
 var callDevices = rpc.declare({ object: 'luci.usb-extroot', method: 'devices' });
+var callSwitchTargets = rpc.declare({ object: 'luci.usb-extroot', method: 'switch_targets' });
 var callLog = rpc.declare({ object: 'luci.usb-extroot', method: 'log' });
 var callArchiveInfo = rpc.declare({ object: 'luci.usb-extroot', method: 'archive_info' });
 var callArchiveList = rpc.declare({ object: 'luci.usb-extroot', method: 'archive_list' });
@@ -585,16 +633,21 @@ return view.extend({
             'style': 'background:#111;color:#ccc;padding:10px;height:400px;overflow:auto;font-family:monospace;font-size:12px;white-space:pre-wrap;border:1px solid #444;margin-top:10px;'
         }, '');
 
-        var deviceSelect = E('select', { 'id': 'usb-extroot-device', 'style': 'width:100%;padding:4px;', 'disabled': true }, [
+        var deviceSelect = E('select', { 'id': 'usb-extroot-device', 'style': 'width:100%;padding:4px;' }, [
             E('option', { 'value': '' }, '— нажмите "Получить состояние" —')
         ]);
-        var modeSelect = E('select', { 'id': 'usb-extroot-mode', 'style': 'width:100%;padding:4px;', 'disabled': true }, [
+        var modeSelect = E('select', { 'id': 'usb-extroot-mode', 'style': 'width:100%;padding:4px;' }, [
             E('option', { 'value': '' }, '— ВЫБЕРИТЕ ВАРИАНТ ПЕРЕНОСА ДАННЫХ —'),
             E('option', { 'value': 'format' }, 'С форматированием (mkfs.ext4) ПОЛНОЕ УНИЧТОЖЕНИЕ ДАННЫХ'),
             E('option', { 'value': 'noformat' }, 'Без форматирования (только overlay-структура)')
         ]);
 
-        var statusText = E('div', { 'style': 'margin-bottom:4px;color:#aaa; font-weight:bold;' }, 'Статус не проверен.');
+        var switchDeviceSelect = E('select', { 'id': 'usb-extroot-switch-device', 'style': 'width:100%;padding:4px;' }, [
+            E('option', { 'value': '' }, '— нажмите "Получить состояние" —')
+        ]);
+
+        var statusText = E('div', { 'style': 'margin-bottom:2px;color:#aaa; font-weight:bold;' }, 'Статус не проверен.');
+        var subStatusText = E('div', { 'style': 'margin-bottom:6px; font-size:13px; font-weight:bold; display:none;' }, '');
         var hintText = E('div', { 'id': 'usb-extroot-hint', 'style': 'margin-bottom:10px; color:#ffaa00; font-size:12px; display:none;' }, '');
 
         var btnFallback = E('button', {
@@ -603,27 +656,36 @@ return view.extend({
         }, 'Исправить аварийный режим overlay');
 
         var btnTransfer = E('button', {
-            'class': 'cbi-button', 'style': 'margin-right:8px;', 'id': 'btn-transfer', 'disabled': true,
+            'class': 'cbi-button', 'style': 'margin-right:8px;', 'id': 'btn-transfer',
             'click': function() { self.runOp(modeSelect.value, deviceSelect.value, null, logPre); }
         }, 'Выполнить перенос');
 
+        var btnSwitchOverlay = E('button', {
+            'class': 'cbi-button cbi-button-apply', 'style': 'margin-right:8px;', 'id': 'btn-switch-overlay',
+            'click': function() {
+                var dev = switchDeviceSelect.value;
+                if (!dev) { ui.addNotification(null, E('p', {}, 'Выберите накопитель для переключения.'), 'danger'); return; }
+                self.runOp('switch_overlay', dev, null, logPre);
+            }
+        }, 'Сменить загрузочный накопитель');
+
         var btnRestore = E('button', {
-            'class': 'cbi-button', 'style': 'margin-right:8px;', 'id': 'btn-restore', 'disabled': true,
+            'class': 'cbi-button', 'style': 'margin-right:8px;', 'id': 'btn-restore',
             'click': function() { self.runOp('restore', null, null, logPre); }
         }, 'Восстановить загрузку с внутренней памяти');
 
         var btnRestoreArchive = E('button', {
-            'class': 'cbi-button', 'style': 'margin-right:8px;', 'id': 'btn-restore-archive', 'disabled': true,
+            'class': 'cbi-button', 'style': 'margin-right:8px;', 'id': 'btn-restore-archive',
             'click': function() { self.showArchiveList(logPre); }
         }, 'Восстановить из архива на флешке');
 
         var btnBackup = E('button', {
-            'class': 'cbi-button', 'style': 'margin-right:32px;', 'id': 'btn-backup-manual', 'disabled': true,
+            'class': 'cbi-button', 'style': 'margin-right:32px;', 'id': 'btn-backup-manual',
             'click': function() { self.runBackupManual(logPre); }
         }, 'Создать бэкап сейчас');
 
         var btnUpload = E('button', {
-            'class': 'cbi-button', 'style': 'margin-right:8px;', 'id': 'btn-upload-archive', 'disabled': true,
+            'class': 'cbi-button', 'style': 'margin-right:8px;', 'id': 'btn-upload-archive',
             'click': function() { self.showUploadDialog(logPre); }
         }, 'Загрузить архив с ПК');
 
@@ -632,7 +694,7 @@ return view.extend({
             'click': function() { self.runOp('reset_keep_extroot', null, null, logPre); }
         }, 'Сбросить настройки (оставить загрузку с флешки)');
 
-        var updateUI = function(status, devices) {
+        var updateUI = function(status, devices, switchTargets) {
             var isExtroot = (status.extroot === 'yes');
             var isFallback = (status.fallback === 'yes');
             var curDev = status.extroot_dev || '';
@@ -650,8 +712,21 @@ return view.extend({
                 deviceSelect.appendChild(E('option', { 'value': '' }, '— нет доступных съёмных накопителей —'));
             }
 
+            switchDeviceSelect.innerHTML = '';
+            var switchAvailCount = 0;
+            if (switchTargets && Array.isArray(switchTargets)) {
+                switchTargets.forEach(function(t) {
+                    switchDeviceSelect.appendChild(E('option', { 'value': t.dev }, t.desc));
+                    switchAvailCount++;
+                });
+            }
+            if (switchAvailCount === 0) {
+                switchDeviceSelect.appendChild(E('option', { 'value': '' }, '— нет накопителей с валидным оверлеем —'));
+            }
+
             var btnTransferEl = document.getElementById('btn-transfer');
             var modeSelectEl = document.getElementById('usb-extroot-mode');
+            var btnSwitchEl = document.getElementById('btn-switch-overlay');
             var btnRestoreEl = document.getElementById('btn-restore');
             var btnRestoreArchiveEl = document.getElementById('btn-restore-archive');
             var btnBackupEl = document.getElementById('btn-backup-manual');
@@ -663,6 +738,17 @@ return view.extend({
                 : 'Используется внутренний накопитель роутера';
             var errStr = isFallback ? 'ДА (ТРЕБУЕТСЯ ИСПРАВЛЕНИЕ)' : 'НЕТ';
             statusText.textContent = extrootStr + ' | Ошибки: ' + errStr;
+
+            var subStatusEl = document.getElementById('usb-extroot-substatus');
+            if (subStatusEl) {
+                if (isExtroot) {
+                    subStatusEl.textContent = 'Вы загружены с внешнего накопителя';
+                    subStatusEl.style.color = '#ffaa00';
+                    subStatusEl.style.display = 'block';
+                } else {
+                    subStatusEl.style.display = 'none';
+                }
+            }
             if (isFallback) statusText.style.color = '#ff5555';
             else if (isExtroot) statusText.style.color = '#32cd32';
             else statusText.style.color = '#aaa';
@@ -671,6 +757,8 @@ return view.extend({
                 if (btnTransferEl) btnTransferEl.disabled = true;
                 if (modeSelectEl) modeSelectEl.disabled = true;
                 deviceSelect.disabled = true;
+                if (btnSwitchEl) btnSwitchEl.disabled = true;
+                switchDeviceSelect.disabled = true;
                 if (btnRestoreEl) btnRestoreEl.disabled = true;
                 if (btnRestoreArchiveEl) btnRestoreArchiveEl.disabled = true;
                 if (btnBackupEl) btnBackupEl.disabled = true;
@@ -679,33 +767,15 @@ return view.extend({
                     hintEl.textContent = 'ВНИМАНИЕ: Обнаружен аварийный режим overlay (фоллбэк). Сначала нажмите «Исправить аварийный режим overlay».';
                     hintEl.style.display = 'block'; hintEl.style.color = '#ff5555';
                 }
-            } else if (isExtroot) {
-                // Если overlay уже на внешнем накопителе
-                if (btnTransferEl) btnTransferEl.disabled = true;
-                if (modeSelectEl) modeSelectEl.disabled = true;
-                deviceSelect.disabled = true;
+            } else {
+                if (btnTransferEl) btnTransferEl.disabled = !canWrite || isExtroot;
+                if (modeSelectEl) modeSelectEl.disabled = !canWrite || isExtroot;
+                deviceSelect.disabled = !canWrite || isExtroot;
+                if (btnSwitchEl) btnSwitchEl.disabled = !canWrite || switchAvailCount === 0;
+                switchDeviceSelect.disabled = !canWrite || switchAvailCount === 0;
                 if (btnRestoreEl) btnRestoreEl.disabled = !canWrite;
                 if (btnRestoreArchiveEl) btnRestoreArchiveEl.disabled = !canWrite;
                 if (btnBackupEl) btnBackupEl.disabled = !canWrite;
-                if (btnUploadEl) btnUploadEl.disabled = !canWrite;
-                if (hintEl) {
-                    if (!canWrite) {
-                        hintEl.textContent = 'Вы загружены с внешнего накопителя. У вас только чтение (нет write-ACL).';
-                        hintEl.style.color = '#ff5555';
-                    } else {
-                        hintEl.textContent = 'Вы загружены с внешнего накопителя.';
-                        hintEl.style.color = '#ffaa00';
-                    }
-                    hintEl.style.display = 'block';
-                }
-            } else {
-                // Если overlay на внутренней памяти роутера
-                if (btnTransferEl) btnTransferEl.disabled = !canWrite;
-                if (modeSelectEl) modeSelectEl.disabled = !canWrite;
-                deviceSelect.disabled = !canWrite;
-                if (btnRestoreEl) btnRestoreEl.disabled = true;
-                if (btnRestoreArchiveEl) btnRestoreArchiveEl.disabled = true;
-                if (btnBackupEl) btnBackupEl.disabled = true;
                 if (btnUploadEl) btnUploadEl.disabled = !canWrite;
                 if (hintEl) {
                     if (!canWrite) {
@@ -726,7 +796,7 @@ return view.extend({
         self._updateUI = updateUI;
 
         self._lockUI = function(disabled) {
-            ['btn-transfer', 'btn-restore', 'btn-fallback_fix', 'btn-restore-archive',
+            ['btn-transfer', 'btn-switch-overlay', 'btn-restore', 'btn-fallback_fix', 'btn-restore-archive',
              'btn-backup-manual', 'btn-upload-archive', 'btn-get-state'].forEach(function(id) {
                 var el = document.getElementById(id);
                 if (el) el.disabled = disabled;
@@ -735,6 +805,8 @@ return view.extend({
             if (modeSelectEl) modeSelectEl.disabled = disabled;
             var deviceSelectEl = document.getElementById('usb-extroot-device');
             if (deviceSelectEl) deviceSelectEl.disabled = disabled;
+            var switchDeviceSelectEl = document.getElementById('usb-extroot-switch-device');
+            if (switchDeviceSelectEl) switchDeviceSelectEl.disabled = disabled;
         };
 
         var btnGetState = E('button', {
@@ -745,9 +817,10 @@ return view.extend({
                 var resetBtn = function() { btn.disabled = false; btn.textContent = 'Получить состояние'; };
                 Promise.all([
                     callStatus().catch(function(err) { return { __error: err }; }),
-                    callDevices().catch(function(err) { return { __error: err }; })
+                    callDevices().catch(function(err) { return { __error: err }; }),
+                    callSwitchTargets().catch(function(err) { return { __error: err }; })
                 ]).then(function(arr) {
-                    var sRes = arr[0], dRes = arr[1];
+                    var sRes = arr[0], dRes = arr[1], stRes = arr[2];
                     if (sRes && sRes.__error) {
                         var msg = (sRes.__error.message) ? sRes.__error.message : String(sRes.__error);
                         ui.addNotification(null, E('p', {}, 'Статус: ' + msg), 'danger');
@@ -756,7 +829,11 @@ return view.extend({
                         var msg2 = (dRes.__error.message) ? dRes.__error.message : String(dRes.__error);
                         ui.addNotification(null, E('p', {}, 'Устройства: ' + msg2), 'danger');
                     }
-                    updateUI(unwrap(sRes) || {}, unwrap(dRes) || []);
+                    if (stRes && stRes.__error) {
+                        var msg3 = (stRes.__error.message) ? stRes.__error.message : String(stRes.__error);
+                        ui.addNotification(null, E('p', {}, 'Цели переключения: ' + msg3), 'danger');
+                    }
+                    updateUI(unwrap(sRes) || {}, unwrap(dRes) || [], unwrap(stRes) || []);
                     resetBtn();
                 });
             }
@@ -764,16 +841,29 @@ return view.extend({
 
         var controls = E('div', { 'style': 'margin:10px 0;padding:10px;background:rgba(0,0,0,0.05);border:1px solid rgba(255,255,255,0.1);' }, [
             E('div', { 'style': 'margin-bottom:8px;' }, [ btnGetState ]),
-            statusText, hintText,
+            statusText, 
+            E('div', { 'id': 'usb-extroot-substatus' }, [ subStatusText ]), 
+            hintText,
             E('hr', { 'style': 'border:0;border-top:1px solid rgba(255,255,255,0.1);margin:10px 0;' }),
             E('div', { 'style': 'margin-bottom:8px;display:flex;gap:10px;align-items:center;' }, [
-                E('label', { 'style': 'font-weight:bold;white-space:nowrap;' }, 'Режим:'), modeSelect
+                E('label', { 'style': 'font-weight:bold;white-space:nowrap;' }, 'Режим переноса:'), modeSelect
             ]),
             E('div', { 'style': 'margin-bottom:12px;display:flex;gap:10px;align-items:center;' }, [
-                E('label', { 'style': 'font-weight:bold;white-space:nowrap;' }, 'Накопитель:'), deviceSelect
+                E('label', { 'style': 'font-weight:bold;white-space:nowrap;' }, 'Накопитель для переноса:'), deviceSelect
             ]),
-            E('div', { 'style': 'display:flex; flex-wrap:wrap; gap:8px; margin-top:20px; margin-bottom:15px;' }, [
-                btnTransfer, btnRestore, btnFallback
+			E('div', { 'style': 'display:flex; flex-wrap:wrap; gap:8px; justify-content:flex-end; margin-top:15px; margin-bottom:15px;' }, [
+				btnTransfer, btnFallback
+			]),
+            E('hr', { 'style': 'border:0;border-top:1px dashed rgba(255,255,255,0.2);margin:10px 0;' }),
+            E('div', { 'style': 'margin-bottom:12px;display:flex;gap:10px;align-items:center;' }, [
+                E('label', { 'style': 'font-weight:bold;white-space:nowrap;' }, 'Выбор загрузочного диска:'), switchDeviceSelect
+            ]),
+			E('div', { 'style': 'display:flex; flex-wrap:wrap; gap:8px; justify-content:flex-end; margin-top:15px; margin-bottom:15px;' }, [
+				btnSwitchOverlay
+			]),
+            E('div', { 'style': 'border-top:1px dashed rgba(255,255,255,0.2); margin-bottom:15px;' }),
+            E('div', { 'style': 'display:flex; flex-wrap:wrap; gap:8px; margin-bottom:10px;' }, [
+                btnRestore
             ]),
             E('div', { 'style': 'border-top:1px dashed rgba(255,255,255,0.2); margin-bottom:15px;' }),
             E('div', { 'style': 'display:flex; flex-wrap:wrap; gap:8px;' }, [
@@ -785,7 +875,7 @@ return view.extend({
             E('h2', {}, ['USB extroot',
                 ver ? E('span', { 'style': 'margin-left:12px;font-size:14px;font-weight:normal;color:#888;' }, ver) : ''
             ]),
-            E('p', {}, 'Перенос overlay OpenWrt на USB-накопитель.'),
+            E('p', {}, 'Перенос overlay OpenWrt на USB-накопитель и управление загрузкой.'),
             controls,
             E('h3', {}, 'Журнал выполнения'),
             logPre,
@@ -833,7 +923,6 @@ return view.extend({
                         uploadUrl += '&token=' + encodeURIComponent(writeToken);
                     }
                     xhr.open('POST', uploadUrl, true);
-                    
                     xhr.setRequestHeader('Content-Type', 'application/octet-stream');
                     xhr.setRequestHeader('X-Extroot-Token', writeToken);
                     xhr.upload.onprogress = function(e) {
@@ -849,13 +938,7 @@ return view.extend({
                             statusText.style.color = '#32cd32';
                             progressBar.firstChild.style.background = '#32cd32';
                             ui.addNotification(null, E('p', {}, 'Архив загружен.'), 'info');
-                            
-                            Promise.all([
-                                callStatus().catch(function() { return {}; }),
-                                callDevices().catch(function() { return []; })
-                            ]).then(function(arr) {
-                                self._updateUI(unwrap(arr[0]) || {}, unwrap(arr[1]) || []);
-                            });
+                            self._lockUI(false);
                         } else {
                             statusText.textContent = 'Ошибка сервера: ' + xhr.responseText;
                             statusText.style.color = '#ff5555';
@@ -957,15 +1040,19 @@ return view.extend({
         if (!writeToken) { ui.addNotification(null, E('p', {}, 'Это действие требует write-ACL.'), 'danger'); return; }
         if (!mode) { ui.addNotification(null, E('p', {}, 'Выберите действие.'), 'warning'); return; }
         if ((mode === 'format' || mode === 'noformat') && !device) { ui.addNotification(null, E('p', {}, 'Выберите накопитель.'), 'danger'); return; }
+        if (mode === 'switch_overlay' && !device) { ui.addNotification(null, E('p', {}, 'Выберите целевой накопитель.'), 'danger'); return; }
 
         var devDesc = device || '';
         if (device) {
             var sel = document.getElementById('usb-extroot-device');
-            if (sel && sel.selectedIndex >= 0) devDesc = sel.options[sel.selectedIndex].text;
+            var switchSel = document.getElementById('usb-extroot-switch-device');
+            if (sel && sel.selectedIndex >= 0 && mode !== 'switch_overlay') devDesc = sel.options[sel.selectedIndex].text;
+            if (switchSel && switchSel.selectedIndex >= 0 && mode === 'switch_overlay') devDesc = switchSel.options[switchSel.selectedIndex].text;
         }
         var descEl, pStyle = { 'style': 'font-size:16px; color:#ff5555; font-weight:bold; margin-bottom:15px;' };
         if (mode === 'format') descEl = E('p', pStyle, 'ВСЕ ДАННЫЕ на устройстве ' + devDesc + ' БУДУТ УНИЧТОЖЕНЫ.');
         else if (mode === 'noformat') descEl = E('p', pStyle, 'На устройстве ' + devDesc + ' будет удалена структура overlay.');
+        else if (mode === 'switch_overlay') descEl = E('p', { 'style': 'font-size:16px; color:#32cd32; font-weight:bold; margin-bottom:15px;' }, 'Загрузочный накопитель будет изменен на: ' + devDesc);
         else if (mode === 'restore') descEl = E('p', pStyle, 'Загрузка будет переключена на внутреннюю память.');
         else if (mode === 'fallback_fix') descEl = E('p', pStyle, 'Будет очищен fstab.extroot и создан /overlay.');
         else if (mode === 'restore_archive') descEl = E('p', pStyle, 'Восстановление из архива ' + archive);
@@ -1052,14 +1139,14 @@ return view.extend({
             }, '🔄 Перезагрузить роутер сейчас');
 
             var body = E('div', { 'id': 'usb-extroot-download-modal', 'style': 'padding: 10px;' }, [
-                E('p', { 'style': 'font-size:16px; font-weight:bold; color:#ffaa00;' }, '⚠️ Перенос данных успешно завершен!'),
-                E('p', {}, 'Перед тем как роутер уйдет в перезагрузку, обязательно скачайте резервную копию overlay. Поскольку файловая система на флешке (ext4) не читается стандартными средствами Windows, это ваш единственный надежный способ сохранить конфигурацию.'),
+                E('p', { 'style': 'font-size:16px; font-weight:bold; color:#ffaa00;' }, '⚠️ Операция успешно завершена!'),
+                E('p', {}, 'Перед тем как роутер уйдет в перезагрузку, убедитесь, что все данные сохранены.'),
                 E('div', { 'style': 'margin-top:20px; display:flex; gap:10px; align-items:center;' }, [
                     btnDownload, btnReboot
                 ])
             ]);
 
-            ui.showModal('Требуется скачивание бэкапа', [ body ]);
+            ui.showModal('Требуется подтверждение перезагрузки', [ body ]);
         };
 
         pollTimer = setInterval(function() {
@@ -1069,13 +1156,6 @@ return view.extend({
                 if (r && r.chunk) {
                     logPre.textContent = cleanLog(r.chunk);
                     logPre.scrollTop = logPre.scrollHeight;
-					
-					
-					if (!archiveDownloaded && r.chunk.indexOf('EXTROOT_READY_CODE_777888') !== -1) {
-						archiveDownloaded = true;
-						showDownloadModal();
-					}
-					
                     if (watchManualReady && !manualDownloaded) {
                         var m = r.chunk.match(/MANUAL_ARCHIVE_READY=(\S+)/);
                         if (m) {
@@ -1091,7 +1171,7 @@ return view.extend({
                 }
             }).catch(function() {});
 
-            if (watchArchiveInfo && !archiveDownloaded) {
+            if (watchArchiveInfo && !archiveDownloaded && mode !== 'switch_overlay') {
                 callArchiveInfo().then(function(res) {
                     var r = unwrap(res);
                     if (r && r.exists === 'yes' && !archiveDownloaded) {
@@ -1109,9 +1189,10 @@ return view.extend({
                         clearInterval(pollTimer);
                         Promise.all([
                             callStatus().catch(function() { return {}; }),
-                            callDevices().catch(function() { return []; })
+                            callDevices().catch(function() { return []; }),
+                            callSwitchTargets().catch(function() { return []; })
                         ]).then(function(arr) {
-                            self._updateUI(unwrap(arr[0]) || {}, unwrap(arr[1]) || []);
+                            self._updateUI(unwrap(arr[0]) || {}, unwrap(arr[1]) || [], unwrap(arr[2]) || []);
                         }).catch(function() { self._lockUI(false); });
                     }
                 }).catch(function() {});
@@ -1476,4 +1557,4 @@ health_check() {
 }
 
 health_check
-exit $? 
+exit $?
