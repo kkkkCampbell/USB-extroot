@@ -585,10 +585,10 @@ return view.extend({
             'style': 'background:#111;color:#ccc;padding:10px;height:400px;overflow:auto;font-family:monospace;font-size:12px;white-space:pre-wrap;border:1px solid #444;margin-top:10px;'
         }, '');
 
-        var deviceSelect = E('select', { 'id': 'usb-extroot-device', 'style': 'width:100%;padding:4px;' }, [
+        var deviceSelect = E('select', { 'id': 'usb-extroot-device', 'style': 'width:100%;padding:4px;', 'disabled': true }, [
             E('option', { 'value': '' }, '— нажмите "Получить состояние" —')
         ]);
-        var modeSelect = E('select', { 'id': 'usb-extroot-mode', 'style': 'width:100%;padding:4px;' }, [
+        var modeSelect = E('select', { 'id': 'usb-extroot-mode', 'style': 'width:100%;padding:4px;', 'disabled': true }, [
             E('option', { 'value': '' }, '— ВЫБЕРИТЕ ВАРИАНТ ПЕРЕНОСА ДАННЫХ —'),
             E('option', { 'value': 'format' }, 'С форматированием (mkfs.ext4) ПОЛНОЕ УНИЧТОЖЕНИЕ ДАННЫХ'),
             E('option', { 'value': 'noformat' }, 'Без форматирования (только overlay-структура)')
@@ -603,27 +603,27 @@ return view.extend({
         }, 'Исправить аварийный режим overlay');
 
         var btnTransfer = E('button', {
-            'class': 'cbi-button', 'style': 'margin-right:8px;', 'id': 'btn-transfer',
+            'class': 'cbi-button', 'style': 'margin-right:8px;', 'id': 'btn-transfer', 'disabled': true,
             'click': function() { self.runOp(modeSelect.value, deviceSelect.value, null, logPre); }
         }, 'Выполнить перенос');
 
         var btnRestore = E('button', {
-            'class': 'cbi-button', 'style': 'margin-right:8px;', 'id': 'btn-restore',
+            'class': 'cbi-button', 'style': 'margin-right:8px;', 'id': 'btn-restore', 'disabled': true,
             'click': function() { self.runOp('restore', null, null, logPre); }
         }, 'Восстановить загрузку с внутренней памяти');
 
         var btnRestoreArchive = E('button', {
-            'class': 'cbi-button', 'style': 'margin-right:8px;', 'id': 'btn-restore-archive',
+            'class': 'cbi-button', 'style': 'margin-right:8px;', 'id': 'btn-restore-archive', 'disabled': true,
             'click': function() { self.showArchiveList(logPre); }
         }, 'Восстановить из архива на флешке');
 
         var btnBackup = E('button', {
-            'class': 'cbi-button', 'style': 'margin-right:32px;', 'id': 'btn-backup-manual',
+            'class': 'cbi-button', 'style': 'margin-right:32px;', 'id': 'btn-backup-manual', 'disabled': true,
             'click': function() { self.runBackupManual(logPre); }
         }, 'Создать бэкап сейчас');
 
         var btnUpload = E('button', {
-            'class': 'cbi-button', 'style': 'margin-right:8px;', 'id': 'btn-upload-archive',
+            'class': 'cbi-button', 'style': 'margin-right:8px;', 'id': 'btn-upload-archive', 'disabled': true,
             'click': function() { self.showUploadDialog(logPre); }
         }, 'Загрузить архив с ПК');
 
@@ -680,6 +680,7 @@ return view.extend({
                     hintEl.style.display = 'block'; hintEl.style.color = '#ff5555';
                 }
             } else if (isExtroot) {
+                // Если overlay уже на внешнем накопителе
                 if (btnTransferEl) btnTransferEl.disabled = true;
                 if (modeSelectEl) modeSelectEl.disabled = true;
                 deviceSelect.disabled = true;
@@ -698,6 +699,7 @@ return view.extend({
                     hintEl.style.display = 'block';
                 }
             } else {
+                // Если overlay на внутренней памяти роутера
                 if (btnTransferEl) btnTransferEl.disabled = !canWrite;
                 if (modeSelectEl) modeSelectEl.disabled = !canWrite;
                 deviceSelect.disabled = !canWrite;
@@ -826,15 +828,12 @@ return view.extend({
                     progressBar.style.display = 'block';
                     var xhr = new XMLHttpRequest();
                     
-					
-					var uploadUrl = '/cgi-bin/usb-extroot-upload?file=' + encodeURIComponent(file.name);
-if (writeToken) {
-    uploadUrl += '&token=' + encodeURIComponent(writeToken);
-}
-xhr.open('POST', uploadUrl, true);
-					
-					
-					
+                    var uploadUrl = '/cgi-bin/usb-extroot-upload?file=' + encodeURIComponent(file.name);
+                    if (writeToken) {
+                        uploadUrl += '&token=' + encodeURIComponent(writeToken);
+                    }
+                    xhr.open('POST', uploadUrl, true);
+                    
                     xhr.setRequestHeader('Content-Type', 'application/octet-stream');
                     xhr.setRequestHeader('X-Extroot-Token', writeToken);
                     xhr.upload.onprogress = function(e) {
@@ -850,7 +849,13 @@ xhr.open('POST', uploadUrl, true);
                             statusText.style.color = '#32cd32';
                             progressBar.firstChild.style.background = '#32cd32';
                             ui.addNotification(null, E('p', {}, 'Архив загружен.'), 'info');
-                            self._lockUI(false);
+                            
+                            Promise.all([
+                                callStatus().catch(function() { return {}; }),
+                                callDevices().catch(function() { return []; })
+                            ]).then(function(arr) {
+                                self._updateUI(unwrap(arr[0]) || {}, unwrap(arr[1]) || []);
+                            });
                         } else {
                             statusText.textContent = 'Ошибка сервера: ' + xhr.responseText;
                             statusText.style.color = '#ff5555';
@@ -1064,6 +1069,13 @@ xhr.open('POST', uploadUrl, true);
                 if (r && r.chunk) {
                     logPre.textContent = cleanLog(r.chunk);
                     logPre.scrollTop = logPre.scrollHeight;
+					
+					
+					if (!archiveDownloaded && r.chunk.indexOf('EXTROOT_READY_CODE_777888') !== -1) {
+						archiveDownloaded = true;
+						showDownloadModal();
+					}
+					
                     if (watchManualReady && !manualDownloaded) {
                         var m = r.chunk.match(/MANUAL_ARCHIVE_READY=(\S+)/);
                         if (m) {
@@ -1200,15 +1212,6 @@ case "$REMOTE" in
     *) echo "Status: 403 Forbidden"; echo; echo "Forbidden."; exit 0 ;;
 esac
 
-
-
-
-
-
-
-
-
-
 EXPECTED_WRITE=$(uci -q get usb-extroot.main.write_token 2>/dev/null)
 if [ -z "$EXPECTED_WRITE" ]; then
     echo "Status: 503 Service Unavailable"; echo; echo "no write_token configured"
@@ -1227,17 +1230,6 @@ done
 if [ "$REQ_TOKEN" != "$EXPECTED_WRITE" ]; then
     echo "Status: 403 Forbidden"; echo; echo "Bad token"; exit 0
 fi
-
-
-
-
-
-
-
-
-
-
-
 
 FILE=""
 [ -n "$QUERY_STRING" ] && for pair in $(echo "$QUERY_STRING" | tr '&' ' '); do
