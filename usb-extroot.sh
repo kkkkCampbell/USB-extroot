@@ -1,6 +1,6 @@
 #!/bin/sh
 # ============================================================
-#  usb-extroot.sh  v0.1.41-draft
+#  usb-extroot.sh  v0.1.41.01-draft
 #  Перенос overlay OpenWrt на USB-накопитель (extroot)
 #  Лог: /tmp/usb-extroot.log
 #  Бэкап: /tmp/.usb-extroot-x7k2m9q4p1w8/
@@ -8,7 +8,7 @@
 #  sh <( wget -qO- https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft/usb-extroot-install.sh )
 #  sh /usb-extroot-install.sh
 # ============================================================
-ver="v0.1.41-draft"
+ver="v0.1.41.01-draft"
 
 # ------------------------------------------------------------
 #  1. Парсинг аргументов.
@@ -1911,6 +1911,14 @@ if [ "$MODE" = "reset_keep_extroot" ]; then
 
 	rm -rf "$QMP/upper.old" 2>/dev/null
 	mv "$QMP/upper" "$QMP/upper.old" || die "$CHOICE_TEXT" "Не смог переместить $QMP/upper -> $QMP/upper.old."
+	
+	echo
+	echo "      Сброс до настроек по умолчанию завершён.
+      Загрузка будет произведена с внешнего накопителя.
+	  
+      Роутер перезагружается"
+	sleep 10
+	
 	sync
 	sleep 2
 	reboot -f
