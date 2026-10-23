@@ -8,7 +8,7 @@
 #  sh <( wget -qO- https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft/usb-extroot-install.sh )
 #  sh /usb-extroot-install.sh
 # ============================================================
-ver="v0.1.41.03-draft1"
+ver="v0.1.41.03-draft"
 TEST_MODE=1
 
 # ------------------------------------------------------------
