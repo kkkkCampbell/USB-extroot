@@ -1343,6 +1343,12 @@ if [ "$MODE" = "backup" ] || [ "$MODE" = "backup_manual" ]; then
 		BK_PREFIX="USER_MANUAL_ARCHIVE"
 		BK_ROTATE=50
 		BK_SUBDIR="manual"
+		# Проверяем и доустанавливаем полноценный tar
+		if ! tar_is_full; then
+			echo "      устанавливаю GNU tar..."
+			$opkg_cmd $pkg_update_cmd >/dev/null 2>&1 || true
+			$opkg_cmd $pkg_install_cmd tar >/dev/null 2>&1 || true
+		fi
 	else
 		BK_TYPE="auto"
 		BK_PREFIX="autobackup"
