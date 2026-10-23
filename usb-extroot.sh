@@ -1479,7 +1479,9 @@ Manual backup доступен только когда /overlay на съёмн�
 	fi
 
 	if [ "$BK_TYPE" = "manual" ]; then
+		echo
 		echo "MANUAL_ARCHIVE_READY=$BK_FILE"
+		echo "Архивация завершена."
 	fi
 
 	exit 0
