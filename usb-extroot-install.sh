@@ -914,15 +914,22 @@ return view.extend({
     showUploadDialog: function(logPre) {
         var self = this;
         if (!writeToken) { ui.addNotification(null, E('p', {}, 'Загрузка архивов требует права записи (write-ACL).'), 'danger'); return; }
+        
         var fileInput = E('input', { 'type': 'file', 'accept': '.tar.gz', 'style': 'margin-bottom:10px; width:100%;' });
+        var copyCheckbox = E('input', { 'type': 'checkbox', 'id': 'upload-copy-to-usb', 'style': 'margin-right:8px;' });
+        var copyLabel = E('label', { 'for': 'upload-copy-to-usb', 'style': 'cursor:pointer;' }, 'Скопировать архив на накопитель');
+        var copyWrapper = E('div', { 'style': 'margin-top:10px; margin-bottom:10px; display:flex; align-items:center;' }, [ copyCheckbox, copyLabel ]);
+
         var statusText = E('p', { 'style': 'margin-top:10px; font-weight:bold;' }, '');
         var progressBar = E('div', { 'style': 'width:100%; height:10px; background:#333; margin-top:10px; display:none;' }, [
             E('div', { 'style': 'width:0%; height:100%; background:#32cd32; transition:width 0.2s;' })
         ]);
+
         var body = E('div', {}, [
-            E('p', {}, 'Выберите файл .tar.gz (архив overlay/upper) для загрузки на роутер:'),
-            fileInput, statusText, progressBar
+            E('p', {}, 'Выберите файл .tar.gz (архив overlay/upper) для загрузки и немедленного восстановления:'),
+            fileInput, copyWrapper, statusText, progressBar
         ]);
+
         var footer = E('div', { 'style': 'display:flex;gap:8px;justify-content:flex-end;' }, [
             E('button', { 'class': 'cbi-button cbi-button-reset', 'click': function() { ui.hideModal(); } }, 'Закрыть'),
             E('button', {
@@ -932,10 +939,11 @@ return view.extend({
                     if (!file || !file.name.endsWith('.tar.gz')) {
                         ui.addNotification(null, E('p', {}, 'Выберите .tar.gz файл.'), 'danger'); return;
                     }
+                    var shouldCopy = copyCheckbox.checked;
                     statusText.textContent = 'Загрузка... (' + Math.round(file.size / 1024) + ' KB)';
                     progressBar.style.display = 'block';
-                    var xhr = new XMLHttpRequest();
                     
+                    var xhr = new XMLHttpRequest();
                     var uploadUrl = '/cgi-bin/usb-extroot-upload?file=' + encodeURIComponent(file.name);
                     if (writeToken) {
                         uploadUrl += '&token=' + encodeURIComponent(writeToken);
@@ -943,6 +951,7 @@ return view.extend({
                     xhr.open('POST', uploadUrl, true);
                     xhr.setRequestHeader('Content-Type', 'application/octet-stream');
                     xhr.setRequestHeader('X-Extroot-Token', writeToken);
+                    
                     xhr.upload.onprogress = function(e) {
                         if (e.lengthComputable) {
                             var percent = Math.round((e.loaded / e.total) * 100);
@@ -950,13 +959,27 @@ return view.extend({
                             statusText.textContent = 'Загрузка: ' + percent + '%';
                         }
                     };
+                    
                     xhr.onload = function() {
                         if (xhr.status >= 200 && xhr.status < 300) {
-                            statusText.textContent = 'Успешно загружено на флэшку! Теперь файл доступен в списке архивов.';
-                            statusText.style.color = '#32cd32';
-                            progressBar.firstChild.style.background = '#32cd32';
-                            ui.addNotification(null, E('p', {}, 'Архив загружен.'), 'info');
-                            self._lockUI(false);
+                            ui.hideModal();
+                            ui.addNotification(null, E('p', {}, 'Архив загружен. Запуск процедуры восстановления...'), 'info');
+                            
+                            var archiveParam = 'tmp/' + file.name;
+                            if (shouldCopy) {
+                                archiveParam = 'save_tmp/' + file.name;
+                            }
+                            
+                            Promise.all([ callDevices(), callStatus() ]).then(function(results) {
+                                var devices = unwrap(results[0]) || [];
+                                var st = unwrap(results[1]) || {};
+                                if (devices.length === 0) {
+                                    ui.addNotification(null, E('p', {}, 'Нет доступных накопителей для восстановления.'), 'danger');
+                                    return;
+                                }
+                                var targetDev = st.extroot_dev || devices[0].dev;
+                                self.runOp('restore_archive', targetDev, archiveParam, logPre);
+                            });
                         } else {
                             statusText.textContent = 'Ошибка сервера: ' + xhr.responseText;
                             statusText.style.color = '#ff5555';
@@ -969,9 +992,9 @@ return view.extend({
                     };
                     xhr.send(file);
                 }
-            }, 'Загрузить')
+            }, 'Загрузить и восстановить')
         ]);
-        ui.showModal('Загрузка архива с ПК', [ body, footer ]);
+        ui.showModal('Загрузка и восстановление из архива', [ body, footer ]);
     },
 
     downloadArchive: function(relPath) {
@@ -1345,34 +1368,10 @@ done
 FILE=$(echo "$FILE" | sed 's|%2[Ff]|/|g; s|%20| |g')
 FILE=$(basename "$FILE")
 
-is_removable_dev() {
-    local dev="$1" parent
-    case "$dev" in
-        /dev/ubi*|/dev/mtdblock*|/dev/root) return 1 ;;
-    esac
-    case "$dev" in
-        /dev/mmcblk*p[0-9]*) parent="${dev%p[0-9]*}" ;;
-        /dev/sd[a-z][0-9]*)  parent="${dev%[0-9]*}" ;;
-        *) return 1 ;;
-    esac
-    parent=$(basename "$parent")
-    case "$parent" in
-        sd[a-z])
-            case "$(readlink -f /sys/block/$parent 2>/dev/null)" in
-                *"/usb"*) return 0 ;;
-            esac
-            ;;
-        mmcblk[0-9]*)
-            [ "$(cat /sys/block/$parent/removable 2>/dev/null)" = "1" ] && return 0
-            ;;
-    esac
-    return 1
-}
-
-TMPFILE="/tmp/upload_$$.tar.gz"
+TMPFILE="/tmp/$FILE"
 cat > "$TMPFILE"
 
-if [ ! -s "$TMPFILE" ]; then echo "Status: 400"; echo; echo "No data"; rm -f "$TMPFILE"; exit 0; fi
+if [ ! -s "$TMPFILE" ]; then echo "Status: 400"; echo; echo "No data"; exit 0; fi
 
 case "$FILE" in
     *..*|*[!A-Za-z0-9_.-]*) echo "Status: 400 Bad Request"; echo; echo "Invalid filename"; rm -f "$TMPFILE"; exit 0 ;;
@@ -1383,26 +1382,7 @@ esac
 MAGIC=$(hexdump -n 2 -e '2/1 "%02x"' "$TMPFILE" 2>/dev/null)
 if [ "$MAGIC" != "1f8b" ]; then echo "Status: 400"; echo; echo "Not gzip"; rm -f "$TMPFILE"; exit 0; fi
 
-SAVED=0
-for mnt in $(awk '$3=="ext4" || $3=="f2fs" || $3=="btrfs" {print $2}' /proc/mounts); do
-    dev=$(awk -v m="$mnt" '$2==m {print $1; exit}' /proc/mounts)
-    [ -n "$dev" ] || continue
-    is_removable_dev "$dev" || continue
-    DIR="$mnt/usb-extroot-backups/manual"
-    mkdir -p "$DIR" 2>/dev/null || continue
-    if mv "$TMPFILE" "$DIR/$FILE" 2>/dev/null; then
-        SAVED=1
-        break
-    fi
-done
-
-if [ "$SAVED" = "0" ]; then
-    if mv "$TMPFILE" "/tmp/$FILE" 2>/dev/null; then
-        SAVED=1
-    fi
-fi
-
-if [ "$SAVED" = "1" ]; then
+if [ -f "$TMPFILE" ]; then
     echo "Content-Type: text/plain"; echo; echo "OK";
 else
     echo "Status: 500"; echo; echo "Failed"; rm -f "$TMPFILE";
