@@ -1,6 +1,6 @@
 #!/bin/sh
 # ============================================================
-#  usb-extroot.sh  v0.1.41.03-draft
+#  usb-extroot.sh  v0.1.41.04-draft
 #  Перенос overlay OpenWrt на USB-накопитель (extroot)
 #  Лог: /tmp/usb-extroot.log
 #  Бэкап: /tmp/.usb-extroot-x7k2m9q4p1w8/
@@ -8,7 +8,7 @@
 #  sh <( wget -qO- https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft/usb-extroot-install.sh )
 #  sh /usb-extroot-install.sh
 # ============================================================
-ver="v0.1.41.03-draft"
+ver="v0.1.41.04-draft"
 SRC_BASE="https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft" #/main"
 TEST_MODE=0
 
@@ -1000,38 +1000,55 @@ if [ "$BATCH" = "1" ] && [ -n "$BATCH_ACTION" ]; then
 			fi
 			exit 0
 			;;
-		archive-list)
-			seen=""
+
+
+
+
+
+archive-list)
+			# 1. Сначала выводим архивы из /tmp (если есть)
 			for f in /tmp/*.tar.gz; do
 				[ -f "$f" ] || continue
 				size=$(wc -c < "$f" 2>/dev/null || echo 0)
 				echo "tmp/$(basename "$f")|$size"
 			done
-			for mnt in $(awk '$3=="ext4" || $3=="f2fs" || $3=="btrfs" {print $2}' /proc/mounts); do
-				dir="$mnt/usb-extroot-backups"
-				[ -d "$dir" ] || continue
-				case " $seen " in *" $dir "*) continue ;; esac
-				seen="$seen $dir"
-				for f in "$dir"/*.tar.gz; do
+
+			# 2. Ищем архивы на внешних накопителях в /mnt с защитой от гонки (до 3 попыток)
+			i=1
+			while [ $i -le 3 ]; do
+				found_on_mnt=0
+				# Используем find для поиска всех tar.gz в папках бэкапов внутри /mnt
+				for f in $(find /mnt -type f -name "*.tar.gz" 2>/dev/null | grep -E 'usb-extroot-backups|manual'); do
 					[ -f "$f" ] || continue
+					found_on_mnt=1
 					size=$(wc -c < "$f" 2>/dev/null || echo 0)
-					echo "$(basename "$f")|$size"
+					
+					# Корректно формируем относительный путь для вывода (manual/name или просто name)
+					case "$f" in
+						*/manual/*) echo "manual/$(basename "$f")|$size" ;;
+						*)          echo "$(basename "$f")|$size" ;;
+					esac
 				done
-				if [ -d "$dir/manual" ]; then
-					for f in "$dir/manual"/*.tar.gz; do
-						[ -f "$f" ] || continue
-						size=$(wc -c < "$f" 2>/dev/null || echo 0)
-						echo "manual/$(basename "$f")|$size"
-					done
-				fi
+				
+				# Если что-то нашли, прерываем цикл ожидания
+				[ "$found_on_mnt" = "1" ] && break
+				
+				sleep 1
+				i=$((i + 1))
 			done
 			exit 0
 			;;
-		*)
-			echo "ERROR: unknown action '$BATCH_ACTION'" >&2
-			exit 2
-			;;
-	esac
+		esac
+
+
+
+
+
+
+
+
+
+
 fi
 
 EXTROOT_ACTIVE=0
@@ -1182,7 +1199,7 @@ load_dependencies() {
 #  Безусловное монтирование съёмных накопителей.
 # ============================================================
 mount_removable_all() {
-	local d p base mnt fs any found listed parts_found w usb_ms _u
+	local d p base mnt fs any found listed parts_found w usb_ms _u retry=0
 
 	any=0
 	found=0
@@ -1195,6 +1212,16 @@ mount_removable_all() {
 		modprobe vfat 2>/dev/null || true
 		modprobe exfat 2>/dev/null || true
 	fi
+
+	# Цикл ожидания появления блочных устройств USB (борьба с гонкой инициализации)
+	while [ "$retry" -lt 3 ]; do
+		for d in /dev/sd? /dev/mmcblk?; do
+			[ -b "$d" ] && { found=1; break; }
+		done
+		[ "$found" = "1" ] && break
+		sleep 1
+		retry=$((retry + 1))
+	done
 
 	usb_ms=0
 	for _u in /sys/bus/usb/devices/*:*/bInterfaceClass; do
