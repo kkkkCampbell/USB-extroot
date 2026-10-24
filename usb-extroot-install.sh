@@ -13,6 +13,19 @@ need_exec() { need_file "$1"; [ -x "$1" ] || die "файл $1 не исполн�
 need_sh()   { need_file "$1"; sh -n "$1" 2>/dev/null || die "синтаксическая ошибка в $1"; }
 need_link() { [ -L "$1" ] || die "симлинк $1 не создан"; [ -e "$1" ] || die "симлинк $1 висит"; }
 
+# safe_ln TARGET LINK — идемпотентный симлинк.
+# Если LINK уже указывает на TARGET — ничего не делает (без "File exists").
+# Иначе (нет LINK, ведёт в другое место, обычный файл) — rm -f + ln -s.
+safe_ln() {
+	local target="$1" link="$2"
+	mkdir -p "$(dirname "$link")" || die "mkdir $(dirname "$link")"
+	if [ -L "$link" ] && [ "$(readlink "$link")" = "$target" ]; then
+		return 0
+	fi
+	rm -f "$link" || die "rm -f $link"
+	ln -s "$target" "$link" || die "ln $link -> $target"
+}
+
 mkdir -p "$BASE_DIR" || die "не смог создать $BASE_DIR"
 need_dir "$BASE_DIR"
 
@@ -459,10 +472,11 @@ method_run() {
             if [ -z "$device" ]; then
                 _fail "device required for $mode"; return
             fi
-            if [ "$mode" != "switch_overlay" ] && [ "${device#/dev/}" = "$device" ]; then
+            if [ "$mode" = "restore_archive" ] && [ "$device" = "internal" ]; then
+                :  # internal разрешён только для restore_archive
+            elif [ "$mode" != "switch_overlay" ] && [ "${device#/dev/}" = "$device" ]; then
                 _fail "invalid device '$device'"; return
-            fi
-            if [ "$mode" != "switch_overlay" ] && [ "$device" != "internal" ] && ! is_removable_storage "$device"; then
+            elif [ "$mode" != "switch_overlay" ] && [ "$device" != "internal" ] && ! is_removable_storage "$device"; then
                 _fail "device '$device' is not removable (only USB/SD allowed)"; return
             fi
             ;;
@@ -536,8 +550,7 @@ chmod +x "$BASE_DIR/luci.usb-extroot" || die "chmod +x luci.usb-extroot"
 need_exec "$BASE_DIR/luci.usb-extroot"
 
 echo "==> Создаю симлинки для rpcd..."
-mkdir -p /usr/libexec/rpcd || die "mkdir /usr/libexec/rpcd"
-ln -sf "$BASE_DIR/luci.usb-extroot" /usr/libexec/rpcd/luci.usb-extroot || die "ln rpcd"
+safe_ln "$BASE_DIR/luci.usb-extroot" /usr/libexec/rpcd/luci.usb-extroot
 need_link /usr/libexec/rpcd/luci.usb-extroot
 
 echo "==> Устанавливаю ACL..."
@@ -562,8 +575,7 @@ cat > "$BASE_DIR/acl.json" <<'ACL_EOF'
 }
 ACL_EOF
 need_file "$BASE_DIR/acl.json"
-mkdir -p /usr/share/rpcd/acl.d || die "mkdir /usr/share/rpcd/acl.d"
-ln -sf "$BASE_DIR/acl.json" /usr/share/rpcd/acl.d/luci-app-usb-extroot.json || die "ln acl"
+safe_ln "$BASE_DIR/acl.json" /usr/share/rpcd/acl.d/luci-app-usb-extroot.json
 need_link /usr/share/rpcd/acl.d/luci-app-usb-extroot.json
 
 echo "==> Устанавливаю меню..."
@@ -578,11 +590,10 @@ cat > "$BASE_DIR/menu.json" <<'MENU_EOF'
 }
 MENU_EOF
 need_file "$BASE_DIR/menu.json"
-mkdir -p /usr/share/luci/menu.d || die "mkdir /usr/share/luci/menu.d"
-ln -sf "$BASE_DIR/menu.json" /usr/share/luci/menu.d/luci-app-usb-extroot.json || die "ln menu"
+safe_ln "$BASE_DIR/menu.json" /usr/share/luci/menu.d/luci-app-usb-extroot.json
 need_link /usr/share/luci/menu.d/luci-app-usb-extroot.json
 
-echo "==> Устанавливаю view с исправленной логикой блокировок..."
+echo "==> Устанавливаю view..."
 cat > "$BASE_DIR/main.js" <<'VIEW_EOF'
 'use strict';
 'require view';
@@ -774,19 +785,17 @@ return view.extend({
                     hintEl.style.display = 'block'; hintEl.style.color = '#ff5555';
                 }
             } else if (!isExtroot) {
-				// Если используется внутренняя память роутера — разрешаем создание бэкапа
+                // Внутренняя память: разрешаем бэкап, восстановление из архива и загрузку с ПК
                 if (btnTransferEl) btnTransferEl.disabled = !canWrite;
                 if (modeSelectEl) modeSelectEl.disabled = !canWrite;
                 deviceSelect.disabled = !canWrite;
                 if (btnSwitchEl) btnSwitchEl.disabled = !canWrite || switchAvailCount === 0;
                 switchDeviceSelect.disabled = !canWrite || switchAvailCount === 0;
-                
-                // if (btnRestoreEl) btnRestoreEl.disabled = true;         // Заблокировано для внутренней памяти
-                // if (btnBackupEl) btnBackupEl.disabled = true;           // Заблокировано для внутренней памяти
-                // if (btnRestoreArchiveEl) btnRestoreArchiveEl.disabled = true; // Заблокировано для внутренней памяти
-                // if (btnUploadEl) btnUploadEl.disabled = true;           // Заблокировано для внутренней памяти
-                if (btnBackupEl) btnBackupEl.disabled = !canWrite;      // Разблокируем создание бэкапа для внутренней памяти
-				
+
+                if (btnBackupEl) btnBackupEl.disabled = !canWrite;
+                if (btnRestoreArchiveEl) btnRestoreArchiveEl.disabled = !canWrite;
+                if (btnUploadEl) btnUploadEl.disabled = !canWrite;
+
                 if (hintEl) hintEl.style.display = 'none';
             } else {
                 // Если система загружена с внешнего накопителя - разблокировать всё (при наличии прав записи)
@@ -879,16 +888,16 @@ return view.extend({
             E('div', { 'style': 'margin-bottom:12px;display:flex;gap:10px;align-items:center;' }, [
                 E('label', { 'style': 'font-weight:bold;white-space:nowrap;' }, 'Накопитель для переноса:'), deviceSelect
             ]),
-			E('div', { 'style': 'display:flex; flex-wrap:wrap; gap:8px; justify-content:flex-end; margin-top:15px; margin-bottom:15px;' }, [
-				btnTransfer, btnFallback
-			]),
+            E('div', { 'style': 'display:flex; flex-wrap:wrap; gap:8px; justify-content:flex-end; margin-top:15px; margin-bottom:15px;' }, [
+                btnTransfer, btnFallback
+            ]),
             E('hr', { 'style': 'border:0;border-top:1px dashed rgba(255,255,255,0.2);margin:10px 0;' }),
             E('div', { 'style': 'margin-bottom:12px;display:flex;gap:10px;align-items:center;' }, [
                 E('label', { 'style': 'font-weight:bold;white-space:nowrap;' }, 'Выбор загрузочного диска:'), switchDeviceSelect
             ]),
-			E('div', { 'style': 'display:flex; flex-wrap:wrap; gap:8px; justify-content:flex-end; margin-top:15px; margin-bottom:15px;' }, [
-				btnSwitchOverlay
-			]),
+            E('div', { 'style': 'display:flex; flex-wrap:wrap; gap:8px; justify-content:flex-end; margin-top:15px; margin-bottom:15px;' }, [
+                btnSwitchOverlay
+            ]),
 
             E('div', { 'style': 'border-top:1px dashed rgba(255,255,255,0.2); margin-bottom:15px;' }),
             E('div', { 'style': 'display:flex; flex-wrap:wrap; gap:8px;' }, [
@@ -968,25 +977,60 @@ return view.extend({
                     };
                     
                     xhr.onload = function() {
-                        if (xhr.status >= 200 && xhr.status < 300) {
+                        
+							
+						                        if (xhr.status >= 200 && xhr.status < 300) {
                             ui.hideModal();
-                            ui.addNotification(null, E('p', {}, 'Архив загружен. Запуск процедуры восстановления...'), 'info');
-                            
+                            ui.addNotification(null, E('p', {}, 'Архив загружен. Выберите цель восстановления.'), 'info');
+
                             var archiveParam = 'tmp/' + file.name;
                             if (shouldCopy) {
                                 archiveParam = 'save_tmp/' + file.name;
                             }
-                            
+
                             Promise.all([ callDevices(), callStatus() ]).then(function(results) {
-                                var devices = unwrap(results[0]) || [];
+                                var devices = unwrap(results[0]);
+                                if (!Array.isArray(devices)) devices = [];
                                 var st = unwrap(results[1]) || {};
-                                if (devices.length === 0) {
-                                    ui.addNotification(null, E('p', {}, 'Нет доступных накопителей для восстановления.'), 'danger');
-                                    return;
+
+                                var targetSelect = E('select', { 'style': 'width:100%;padding:4px;margin-bottom:10px;' }, [
+                                    E('option', { 'value': 'internal' }, 'Внутренняя память роутера (/overlay)')
+                                ]);
+                                devices.forEach(function(d) {
+                                    targetSelect.appendChild(E('option', { 'value': d.dev }, d.desc));
+                                });
+
+                                // По умолчанию — текущая загрузка: extroot → текущий диск, иначе internal
+                                if (st.extroot_dev) {
+                                    targetSelect.value = st.extroot_dev;
+                                } else {
+                                    targetSelect.value = 'internal';
                                 }
-                                var targetDev = st.extroot_dev || devices[0].dev;
-                                self.runOp('restore_archive', targetDev, archiveParam, logPre);
-                            });
+
+                                var body = E('div', {}, [
+                                    E('p', { 'style': 'font-weight:bold;' }, 'Архив: ' + file.name),
+                                    E('p', {}, 'Цель восстановления:'),
+                                    targetSelect,
+                                    E('p', { 'style': 'font-size:12px; color:#888; margin-top:10px;' },
+                                        'По умолчанию — текущая загрузка. Если выбрать внешний накопитель, система после ребута загрузится с него (extroot).')
+                                ]);
+
+                                var footer = E('div', { 'style': 'display:flex;gap:8px;justify-content:flex-end;' }, [
+                                    E('button', { 'class': 'cbi-button cbi-button-reset',
+                                        'click': function() { ui.hideModal(); } }, 'Отмена'),
+                                    E('button', {
+                                        'class': 'cbi-button cbi-button-apply',
+                                        'click': function() {
+                                            var target = targetSelect.value;
+                                            if (!target) { ui.addNotification(null, E('p', {}, 'Выберите цель.'), 'danger'); return; }
+                                            ui.hideModal();
+                                            self.runOp('restore_archive', target, archiveParam, logPre);
+                                        }
+                                    }, 'Восстановить')
+                                ]);
+                                ui.showModal('Выбор цели восстановления', [ body, footer ]);
+                            });	
+							
                         } else {
                             statusText.textContent = 'Ошибка сервера: ' + xhr.responseText;
                             statusText.style.color = '#ff5555';
@@ -1041,14 +1085,11 @@ return view.extend({
         if (!writeToken) { ui.addNotification(null, E('p', {}, 'Восстановление из архива требует write-ACL.'), 'danger'); return; }
         Promise.all([ callArchiveList(), callDevices() ]).then(function(results) {
             var list = unwrap(results[0]);
-            var devices = unwrap(results[1]) || [];
+            var devices = unwrap(results[1]);
+            if (!Array.isArray(devices)) devices = [];
             
             if (!Array.isArray(list) || list.length === 0) { 
                 ui.addNotification(null, E('p', {}, 'На примонтированных разделах нет архивов.'), 'warning'); 
-                return; 
-            }
-            if (!Array.isArray(devices) || devices.length === 0) { 
-                ui.addNotification(null, E('p', {}, 'Нет доступных съёмных накопителей.'), 'danger'); 
                 return; 
             }
 
@@ -1061,16 +1102,18 @@ return view.extend({
             });
 
             var deviceSelect2 = E('select', { 'style': 'width:100%;padding:4px;margin-bottom:10px;' }, [
-                E('option', { 'value': '' }, '— выберите флешку —')
+                E('option', { 'value': '' }, '— выберите цель —')
             ]);
+            // Всегда доступна внутренняя память (восстановление на /overlay)
+            deviceSelect2.appendChild(E('option', { 'value': 'internal' }, 'Внутренняя память роутера (/overlay)'));
             devices.forEach(function(d) {
                 deviceSelect2.appendChild(E('option', { 'value': d.dev }, d.desc));
             });
 
             var body = E('div', {}, [
-                E('p', { 'style': 'color:#ff5555;font-weight:bold;' }, 'ВНИМАНИЕ: архив будет развёрнут на выбранную флешку.'),
+                E('p', { 'style': 'color:#ff5555;font-weight:bold;' }, 'ВНИМАНИЕ: архив будет развёрнут на выбранную цель (внешний накопитель или внутренняя память /overlay).'),
                 E('p', {}, 'Архив:'), archiveSelect,
-                E('p', {}, 'Целевая флешка:'), deviceSelect2
+                E('p', {}, 'Целевое устройство:'), deviceSelect2
             ]);
 
             var footer = E('div', { 'style': 'display:flex;gap:8px;justify-content:flex-end;' }, [
@@ -1080,13 +1123,13 @@ return view.extend({
                     'click': function() {
                         var arc = archiveSelect.value;
                         var dev = deviceSelect2.value;
-                        if (!arc || !dev) { ui.addNotification(null, E('p', {}, 'Выберите архив и флешку.'), 'danger'); return; }
+                        if (!arc || !dev) { ui.addNotification(null, E('p', {}, 'Выберите архив и цель.'), 'danger'); return; }
                         ui.hideModal();
                         self.runOp('restore_archive', dev, arc, logPre);
                     }
                 }, 'Развернуть')
             ]);
-            ui.showModal('Восстановление из архива на флешку', [ body, footer ]);
+            ui.showModal('Восстановление из архива', [ body, footer ]);
         }).catch(function(err) { ui.addNotification(null, E('p', {}, 'Ошибка получения списков: ' + err), 'danger'); });
     },
 
@@ -1097,6 +1140,121 @@ return view.extend({
         if ((mode === 'format' || mode === 'noformat') && !device) { ui.addNotification(null, E('p', {}, 'Выберите накопитель.'), 'danger'); return; }
         if (mode === 'switch_overlay' && !device) { ui.addNotification(null, E('p', {}, 'Выберите целевой накопитель.'), 'danger'); return; }
 
+        if (mode === 'restore_archive' && device === 'internal') {
+            self.showBackupPrompt(archive, logPre);
+            return;
+        }
+
+        self.showConfirmDialog(mode, device, archive, logPre);
+    },
+
+    showBackupPrompt: function(archive, logPre) {
+        var self = this;
+        var body = E('div', {}, [
+            E('p', { 'style': 'font-weight:bold; color:#ffaa00;' },
+                'Восстановление на внутреннюю память роутера (/overlay).'),
+            E('p', {},
+                'Текущий overlay будет уничтожен в процессе восстановления. Рекомендуем сначала сохранить его в архив и скачать на компьютер — на случай, если после восстановления что-то пойдёт не так.'),
+            E('p', {}, 'Выберите действие:')
+        ]);
+        var footer = E('div', { 'style': 'display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;' }, [
+            E('button', {
+                'class': 'cbi-button cbi-button-reset',
+                'click': function() { ui.hideModal(); }
+            }, 'Отмена'),
+            E('button', {
+                'class': 'cbi-button cbi-button-negative',
+                'click': function() {
+                    ui.hideModal();
+                    self.showConfirmDialog('restore_archive', 'internal', archive, logPre);
+                }
+            }, 'Восстановить без бэкапа'),
+            E('button', {
+                'class': 'cbi-button cbi-button-apply',
+                'click': function() {
+                    ui.hideModal();
+                    self.doBackupThenRestore(archive, logPre);
+                }
+            }, 'Сначала бэкап, потом восстановить')
+        ]);
+        ui.showModal('Сохранить текущее состояние?', [ body, footer ]);
+    },
+
+    doBackupThenRestore: function(archive, logPre) {
+        var self = this;
+        logPre.textContent = '';
+        self._lockUI(true);
+
+        callRun('backup_manual', '', '', 'yes').then(function(res) {
+            if (res && res.error) {
+                ui.addNotification(null, E('p', {}, 'Ошибка запуска бэкапа: ' + res.error), 'danger');
+                self._lockUI(false);
+                return;
+            }
+            self._pollBackupThenRestore(archive, logPre);
+        }).catch(function(err) {
+            ui.addNotification(null, E('p', {}, 'Ошибка запуска бэкапа: ' + err), 'danger');
+            self._lockUI(false);
+        });
+    },
+
+    _pollBackupThenRestore: function(archive, logPre) {
+        var self = this;
+        var downloaded = false;
+        var completed = false;
+        var ticks = 0;
+        var MAX_TICKS = 180;
+        var downloadPromise = null;
+
+        var timer = setInterval(function() {
+            ticks++;
+            if (ticks > MAX_TICKS) {
+                clearInterval(timer);
+                ui.addNotification(null, E('p', {}, 'Таймаут создания бэкапа. Восстановление отменено.'), 'danger');
+                self._lockUI(false);
+                return;
+            }
+            callLog().then(function(res) {
+                var r = unwrap(res);
+                if (r && r.chunk) {
+                    logPre.textContent = cleanLog(r.chunk);
+                    logPre.scrollTop = logPre.scrollHeight;
+
+                    if (!downloaded) {
+                        var m = r.chunk.match(/MANUAL_ARCHIVE_READY=(\S+)/);
+                        if (m) {
+                            downloaded = true;
+                            var rel = m[1].trim().split('/').pop();
+                            if (m[1].indexOf('/manual/') !== -1) rel = 'manual/' + rel;
+                            downloadPromise = self.downloadArchive(rel).then(function(ok) {
+                                if (ok) ui.addNotification(null, E('p', {}, 'Бэкап скачан на компьютер.'), 'info');
+                                else ui.addNotification(null, E('p', {}, 'Не удалось скачать бэкап автоматически. ', buildManualDownloadLink(rel)), 'warning');
+                            }).catch(function() {});
+                        }
+                    }
+
+                    if (!completed && r.chunk.indexOf('Архивация завершена.') !== -1) {
+                        completed = true;
+                        clearInterval(timer);
+                        var proceed = function() {
+                            ui.addNotification(null, E('p', {},
+                                'Бэкап готов. Переходим к восстановлению архива на внутреннюю память.'), 'info');
+                            self.showConfirmDialog('restore_archive', 'internal', archive, logPre);
+                        };
+                        if (downloadPromise) {
+                            downloadPromise.then(function() { setTimeout(proceed, 1000); })
+                                           .catch(function() { setTimeout(proceed, 1000); });
+                        } else {
+                            setTimeout(proceed, 2000);
+                        }
+                    }
+                }
+            }).catch(function() {});
+        }, 1000);
+    },
+
+    showConfirmDialog: function(mode, device, archive, logPre) {
+        var self = this;
         var devDesc = device || '';
         if (device) {
             var sel = document.getElementById('usb-extroot-device');
@@ -1110,7 +1268,13 @@ return view.extend({
         else if (mode === 'switch_overlay') descEl = E('p', { 'style': 'font-size:16px; color:#32cd32; font-weight:bold; margin-bottom:15px;' }, 'Загрузочный накопитель будет изменен на: ' + devDesc);
         else if (mode === 'restore') descEl = E('p', pStyle, 'Загрузка будет переключена на внутреннюю память.');
         else if (mode === 'fallback_fix') descEl = E('p', pStyle, 'Будет очищен fstab.extroot и создан /overlay.');
-        else if (mode === 'restore_archive') descEl = E('p', pStyle, 'Восстановление из архива ' + archive);
+        else if (mode === 'restore_archive') {
+            var targetLabel = (device === 'internal') ? 'ВНУТРЕННЮЮ ПАМЯТЬ (/overlay)' : devDesc;
+            descEl = E('p', pStyle,
+                'Восстановление из архива ' + archive + ' на ' + targetLabel +
+                '. Текущий overlay будет заменён. Откат: внешний архив + загрузка с флешки.'
+            );
+        }
         else if (mode === 'reset_keep_extroot') descEl = E('p', pStyle, 'ВНИМАНИЕ: Все настройки будут сброшены. Система продолжит загружаться с текущей флешки, но конфигурация станет заводской. Бэкапы на флешке сохранятся.');
         var code = genConfirmCode();
         var codeInput = E('input', { 'type': 'text', 'maxlength': '4', 'style': 'font-size:16px;width:60px;text-align:center;padding:4px;' });
@@ -1121,7 +1285,8 @@ return view.extend({
             E('p', {}, [ E('label', {}, 'Ввод: '), codeInput ])
         ]);
         var footer = E('div', { 'style': 'display:flex;gap:8px;justify-content:flex-end;' }, [
-            E('button', { 'class': 'cbi-button cbi-button-reset', 'click': function() { ui.hideModal(); } }, 'Отмена'),
+            E('button', { 'class': 'cbi-button cbi-button-reset',
+                'click': function() { ui.hideModal(); self._lockUI(false); } }, 'Отмена'),
             E('button', {
                 'class': 'cbi-button cbi-button-apply',
                 'click': function() {
@@ -1260,8 +1425,7 @@ return view.extend({
 });
 VIEW_EOF
 need_file "$BASE_DIR/main.js"
-mkdir -p /www/luci-static/resources/view/usb-extroot || die "mkdir luci-static view"
-ln -sf "$BASE_DIR/main.js" /www/luci-static/resources/view/usb-extroot/main.js || die "ln view"
+safe_ln "$BASE_DIR/main.js" /www/luci-static/resources/view/usb-extroot/main.js
 need_link /www/luci-static/resources/view/usb-extroot/main.js
 
 echo "==> Устанавливаю CGI для отдачи архива (read_token)..."
@@ -1307,15 +1471,6 @@ if [ -n "$FILE" ]; then
         *) echo "Status: 400 Bad Request"; echo; echo "Only .tar.gz, tmp/ or manual/"; exit 0 ;;
     esac
 
-
-
-
-
-
-
-
-
-
     FOUND=""
     if [ "${FILE#tmp/}" != "$FILE" ]; then
         candidate="/tmp/${FILE#tmp/}"
@@ -1353,30 +1508,16 @@ if [ -n "$FILE" ]; then
     fi
 
     if [ -z "$FOUND" ]; then echo "Status: 404 Not Found"; echo; echo "Archive not found"; exit 0; fi
-	
-	
-	
-	
-	
-	
-	
-	
+
     name=$(basename "$FOUND"); size=$(wc -c < "$FOUND")
     echo "Content-Type: application/gzip"; echo "Content-Length: $size"
     echo "Content-Disposition: attachment; filename=\"$name\""; echo "Cache-Control: no-store"; echo
     cat "$FOUND"; exit 0
 fi
 
-
-
-
 latest=$(ls -t /tmp/.usb-extroot-*/overlay_backup_*.tar.gz \
               /tmp/.usb-extroot-*/USER_MANUAL_ARCHIVE_*.tar.gz \
               /tmp/.usb-extroot-*/manual/USER_MANUAL_ARCHIVE_*.tar.gz 2>/dev/null | head -1)
-
-
-
-
 
 if [ -z "$latest" ] || [ ! -f "$latest" ]; then echo "Status: 404 Not Found"; echo; echo "Not found"; exit 0; fi
 name=$(basename "$latest"); size=$(wc -c < "$latest")
@@ -1388,8 +1529,7 @@ CGI_EOF
 need_sh "$BASE_DIR/archive.cgi"
 chmod +x "$BASE_DIR/archive.cgi" || die "chmod +x archive.cgi"
 need_exec "$BASE_DIR/archive.cgi"
-mkdir -p /www/cgi-bin || die "mkdir /www/cgi-bin"
-ln -sf "$BASE_DIR/archive.cgi" /www/cgi-bin/usb-extroot-archive || die "ln archive.cgi"
+safe_ln "$BASE_DIR/archive.cgi" /www/cgi-bin/usb-extroot-archive
 need_link /www/cgi-bin/usb-extroot-archive
 
 echo "==> Устанавливаю CGI для загрузки архива (write_token)..."
@@ -1451,7 +1591,7 @@ UPLOAD_EOF
 need_sh "$BASE_DIR/upload.cgi"
 chmod +x "$BASE_DIR/upload.cgi" || die "chmod +x upload.cgi"
 need_exec "$BASE_DIR/upload.cgi"
-ln -sf "$BASE_DIR/upload.cgi" /www/cgi-bin/usb-extroot-upload || die "ln upload.cgi"
+safe_ln "$BASE_DIR/upload.cgi" /www/cgi-bin/usb-extroot-upload
 need_link /www/cgi-bin/usb-extroot-upload
 
 echo "==> Устанавливаю init.d/usb-extroot-autobackup..."
