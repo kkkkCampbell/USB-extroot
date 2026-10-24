@@ -1,6 +1,6 @@
 #!/bin/sh
 # ============================================================
-#  usb-extroot.sh  v0.1.41.04-draft
+#  usb-extroot.sh  v0.1.41.05-draft
 #  Перенос overlay OpenWrt на USB-накопитель (extroot)
 #  Лог: /tmp/usb-extroot.log
 #  Бэкап: /tmp/.usb-extroot-x7k2m9q4p1w8/
@@ -8,9 +8,136 @@
 #  sh <( wget -qO- https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft/usb-extroot-install.sh )
 #  sh /usb-extroot-install.sh
 # ============================================================
-ver="v0.1.41.04-draft"
-SRC_BASE="https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft" #/main"
+ver="v0.1.41.05-draft"
+SRC_BASE="https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft"
 TEST_MODE=0
+
+# ------------------------------------------------------------
+#  0. ОБЩИЕ ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ (РЕЮЗИНГ КОДА)
+# ------------------------------------------------------------
+cleanup_smb_user() {
+	if command -v ksmbd.useradmin >/dev/null 2>&1; then
+		ksmbd.useradmin -d 12345 >/dev/null 2>&1
+	fi
+	sed -i '/^12345:/d' /etc/passwd 2>/dev/null
+	[ -f /etc/shadow ] && sed -i '/^12345:/d' /etc/shadow 2>/dev/null
+}
+
+clear_fstab_extroot() {
+	local cfg_dir="${1:-}"
+	if [ -n "$cfg_dir" ]; then
+		uci -c "$cfg_dir" -q delete fstab.extroot
+		uci -c "$cfg_dir" -q delete fstab.rwm
+		uci -c "$cfg_dir" commit fstab 2>/dev/null
+	else
+		uci -q delete fstab.extroot
+		uci -q delete fstab.rwm
+		uci commit fstab 2>/dev/null
+	fi
+}
+
+apply_fstab_extroot() {
+	local uuid="$1"
+	local cfg_dir="${2:-}"
+	
+	clear_fstab_extroot "$cfg_dir"
+	
+	if [ -n "$cfg_dir" ]; then
+		uci -c "$cfg_dir" set fstab.extroot=mount
+		uci -c "$cfg_dir" set fstab.extroot.uuid="$uuid"
+		uci -c "$cfg_dir" set fstab.extroot.target="/overlay"
+		uci -c "$cfg_dir" set fstab.extroot.enabled="1"
+		uci -c "$cfg_dir" commit fstab 2>/dev/null
+	else
+		uci set fstab.extroot=mount
+		uci set fstab.extroot.uuid="$uuid"
+		uci set fstab.extroot.target="/overlay"
+		uci set fstab.extroot.enabled="1"
+		uci commit fstab
+	fi
+}
+
+get_partition_uuid() {
+	local part="$1"
+	local uuid
+	uuid=$(block info "$part" 2>/dev/null | grep -o 'UUID="[^"]*"' | cut -d'"' -f2)
+	if [ -z "$uuid" ]; then
+		sleep 1
+		uuid=$(block info "$part" 2>/dev/null | grep -o 'UUID="[^"]*"' | cut -d'"' -f2)
+	fi
+	echo "$uuid"
+}
+
+rotate_backups() {
+	local bk_dir="$1"
+	local bk_rotate="$2"
+	local pattern="${3:-*.tar.gz}"
+	
+	local total
+	total=$(ls -1 "$bk_dir"/$pattern 2>/dev/null | wc -l)
+	if [ "$total" -gt "$bk_rotate" ]; then
+		local remove_count=$((total - bk_rotate))
+		ls -1t "$bk_dir"/$pattern 2>/dev/null | tail -n "$remove_count" | while read -r old; do
+			rm -f "$old"
+			echo "      ротация: удалён старый архив $(basename "$old")"
+		done
+	fi
+}
+
+create_reboot_helper() {
+	local target_root="$1"
+	local helper_type="${2:-MAIN}"
+	local reboot_helper="$target_root/root/reboot_after.sh"
+	
+	mkdir -p "$target_root/root"
+	cat > "$reboot_helper" <<-EOF
+	#!/bin/sh
+	# $helper_type
+	WAIT_BEFORE_REBOOT=20
+
+	rm -f /root/reboot_after.sh
+	uci -q delete ksmbd.overlaybackup
+	uci -q commit ksmbd
+	command -v ksmbd.useradmin >/dev/null 2>&1 && ksmbd.useradmin -d 12345 >/dev/null 2>&1
+	sed -i '/^12345:/d' /etc/passwd
+	[ -f /etc/shadow ] && sed -i '/^12345:/d' /etc/shadow
+	sed -i '/^\/root\/reboot_after\.sh$/d' /etc/rc.local 2>/dev/null || true
+
+	mkdir -p /overlay
+	sleep 1
+	sync
+
+	sleep "\$WAIT_BEFORE_REBOOT"
+
+	if ! mount | grep -q ' /rom/overlay ' && mount | grep -q ' /overlay '; then
+		rm -f /flagfile
+		/etc/init.d/ac_recovery.sh stop
+		exit 0
+	fi
+
+	sync
+	delay="40"
+	setsid sh -c "
+		trap '' TERM
+		sleep \$delay
+		echo b > /proc/sysrq-trigger
+		sleep 1
+		reboot -f
+	" &
+	sleep 1
+	reboot
+	EOF
+	chmod +x "$reboot_helper"
+
+	mkdir -p "$target_root/etc"
+	if [ ! -f "$target_root/etc/rc.local" ]; then
+		printf '#!/bin/sh\n# Put your custom commands here that should be executed once\n# the system init finished. By default this file does nothing.\n\nexit 0\n' > "$target_root/etc/rc.local"
+	fi
+	if ! grep -q '^/root/reboot_after.sh$' "$target_root/etc/rc.local"; then
+		sed -i '/^exit 0/i /root/reboot_after.sh' "$target_root/etc/rc.local"
+	fi
+	chmod +x "$target_root/etc/rc.local"
+}
 
 # ------------------------------------------------------------
 #  1. Парсинг аргументов.
@@ -290,14 +417,7 @@ share_down() {
 		uci -q commit ksmbd
 	fi
 
-	if have ksmbd.useradmin; then
-		ksmbd.useradmin -d 12345 >/dev/null 2>&1
-	fi
-
-	sed -i '/^12345:/d' /etc/passwd 2>/dev/null
-	if [ -f /etc/shadow ]; then
-		sed -i '/^12345:/d' /etc/shadow 2>/dev/null
-	fi
+	cleanup_smb_user
 }
 
 trap 'echo; echo "Прервано. Восстанавливаю состояние..."; pkg_repair_finish; share_down; exit 130' INT TERM HUP
@@ -460,7 +580,7 @@ parent_dev() {
 		/dev/mmcblk*p[0-9]*) echo "${d%p[0-9]*}" ;;
 		/dev/sd[a-z][0-9]*)  echo "${d%[0-9]*}" ;;
 		/dev/nvme*n*p[0-9]*) echo "${d%p[0-9]*}" ;;
-		/dev/vd[a-z][0-9]*)  echo "${d%[0-9]*}" ;;
+		/dev/vd[a-z][0-9]*)  echo "${d%p[0-9]*}" ;;
 		*)                   echo "$d" ;;
 	esac
 }
@@ -965,7 +1085,7 @@ if [ "$BATCH" = "1" ] && [ -n "$BATCH_ACTION" ]; then
 						fs=$(awk -v dev="$p" '$1==dev {print $3; exit}' /proc/mounts)
 					fi
 
-					if [ -z "$fs" ] && command -v blkid >/dev/null 2>&1; then
+					if [ -n "$fs" ] && command -v blkid >/dev/null 2>&1; then
 						fs=$(blkid -o value -s TYPE "$p" 2>/dev/null)
 					fi
 
@@ -1001,36 +1121,27 @@ if [ "$BATCH" = "1" ] && [ -n "$BATCH_ACTION" ]; then
 			exit 0
 			;;
 
-
-
-
-
-archive-list)
-			# 1. Сначала выводим архивы из /tmp (если есть)
+		archive-list)
 			for f in /tmp/*.tar.gz; do
 				[ -f "$f" ] || continue
 				size=$(wc -c < "$f" 2>/dev/null || echo 0)
 				echo "tmp/$(basename "$f")|$size"
 			done
 
-			# 2. Ищем архивы на внешних накопителях в /mnt с защитой от гонки (до 3 попыток)
 			i=1
 			while [ $i -le 3 ]; do
 				found_on_mnt=0
-				# Используем find для поиска всех tar.gz в папках бэкапов внутри /mnt
 				for f in $(find /mnt -type f -name "*.tar.gz" 2>/dev/null | grep -E 'usb-extroot-backups|manual'); do
 					[ -f "$f" ] || continue
 					found_on_mnt=1
 					size=$(wc -c < "$f" 2>/dev/null || echo 0)
 					
-					# Корректно формируем относительный путь для вывода (manual/name или просто name)
 					case "$f" in
 						*/manual/*) echo "manual/$(basename "$f")|$size" ;;
 						*)          echo "$(basename "$f")|$size" ;;
 					esac
 				done
 				
-				# Если что-то нашли, прерываем цикл ожидания
 				[ "$found_on_mnt" = "1" ] && break
 				
 				sleep 1
@@ -1038,17 +1149,7 @@ archive-list)
 			done
 			exit 0
 			;;
-		esac
-
-
-
-
-
-
-
-
-
-
+	esac
 fi
 
 EXTROOT_ACTIVE=0
@@ -1213,7 +1314,6 @@ mount_removable_all() {
 		modprobe exfat 2>/dev/null || true
 	fi
 
-	# Цикл ожидания появления блочных устройств USB (борьба с гонкой инициализации)
 	while [ "$retry" -lt 3 ]; do
 		for d in /dev/sd? /dev/mmcblk?; do
 			[ -b "$d" ] && { found=1; break; }
@@ -1410,7 +1510,6 @@ if [ "$MODE" = "backup" ] || [ "$MODE" = "backup_manual" ]; then
 		BK_PREFIX="USER_MANUAL_ARCHIVE"
 		BK_ROTATE=50
 		BK_SUBDIR="manual"
-		# Проверяем и доустанавливаем полноценный tar
 		if ! tar_is_full; then
 			echo "      устанавливаю GNU tar..."
 			$opkg_cmd $pkg_update_cmd >/dev/null 2>&1 || true
@@ -1537,15 +1636,7 @@ Manual backup доступен только когда /overlay на съёмн�
 	BK_SIZE_KB=$(du -k "$BK_FILE" 2>/dev/null | awk '{print $1}')
 	echo -e "${CLR_GREEN}      архив: $BK_FILE (${BK_SIZE_KB}K)${CLR_RESET}"
 
-	TOTAL=$(ls -1 "$BK_DIR"/*.tar.gz 2>/dev/null | wc -l)
-	if [ "$TOTAL" -gt "$BK_ROTATE" ]; then
-		REMOVE=$((TOTAL - BK_ROTATE))
-		echo "      ротация: удаляю $REMOVE старых"
-		ls -1t "$BK_DIR"/*.tar.gz 2>/dev/null | tail -n "$REMOVE" | while read -r old; do
-			rm -f "$old"
-			echo "        удалён $(basename "$old")"
-		done
-	fi
+	rotate_backups "$BK_DIR" "$BK_ROTATE"
 
 	if [ "$BK_TYPE" = "auto" ]; then
 		touch /tmp/usb-extroot-autobackup.done
@@ -1602,10 +1693,6 @@ if [ "$MODE" = "restore_archive" ]; then
 	Используйте штатное восстановление или выберите архив, созданный кнопкой «Создать бэкап»."
 	fi
 
-	# 2.6 Проверка безопасности архива ДО сноса upper.
-	# Отклоняем: absolute paths, '..' в путях, device/fifo, suid/sgid.
-	# Симлинки разрешены — это норма overlay (etc/ksmbd/ksmbd.conf -> /var/...,
-	# etc/rc.d/S* -> ../init.d/*), их цель — внутри merged-view, не за пределами upper.
 	echo "      проверяю архив на небезопасное содержимое..."
 
 	TAR_LIST=$(tar -tzf "$ARCHIVE_PATH" 2>/dev/null) || die "$CHOICE_TEXT" "Не читается tar."
@@ -1657,11 +1744,7 @@ if [ "$MODE" = "restore_archive" ]; then
 		die "$CHOICE_TEXT" "После распаковки в $RESTORE_TARGET/upper нет etc/config."
 	fi
 
-	RESTORE_UUID=$(block info "$RESTORE_PART" 2>/dev/null | grep -o 'UUID="[^"]*"' | cut -d'"' -f2)
-	if [ -z "$RESTORE_UUID" ]; then
-		sleep 1
-		RESTORE_UUID=$(block info "$RESTORE_PART" 2>/dev/null | grep -o 'UUID="[^"]*"' | cut -d'"' -f2)
-	fi
+	RESTORE_UUID=$(get_partition_uuid "$RESTORE_PART")
 	if [ -z "$RESTORE_UUID" ]; then
 		die "$CHOICE_TEXT" "Не получил UUID для $RESTORE_PART."
 	fi
@@ -1678,9 +1761,7 @@ config global
 	option check_fs '0'
 FSTAB_EOF
 
-	uci -q delete fstab.extroot
-	uci -q delete fstab.rwm
-	uci commit fstab
+	clear_fstab_extroot
 
 	echo "      настраиваю extroot во внутренней памяти (UBI)..."
 	UBI_DEV=$(find_internal_overlay_dev)
@@ -1690,13 +1771,7 @@ FSTAB_EOF
 		if mount -t ubifs "$UBI_DEV" "$UBI_MNT" 2>/dev/null || mount "$UBI_DEV" "$UBI_MNT" 2>/dev/null; then
 			UBI_CFG="$UBI_MNT/upper/etc/config"
 			if [ -d "$UBI_CFG" ]; then
-				uci -c "$UBI_CFG" -q delete fstab.extroot
-				uci -c "$UBI_CFG" set fstab.extroot=mount
-				uci -c "$UBI_CFG" set fstab.extroot.uuid="$RESTORE_UUID"
-				uci -c "$UBI_CFG" set fstab.extroot.target="/overlay"
-				uci -c "$UBI_CFG" set fstab.extroot.enabled="1"
-				uci -c "$UBI_CFG" -q delete fstab.rwm
-				uci -c "$UBI_CFG" commit fstab
+				apply_fstab_extroot "$RESTORE_UUID" "$UBI_CFG"
 				echo "      extroot: UUID=$RESTORE_UUID -> /overlay (сохранено в UBI)"
 			fi
 			umount "$UBI_MNT" 2>/dev/null || true
@@ -1708,51 +1783,7 @@ FSTAB_EOF
 
 	echo -e "      extroot: UUID=${CLR_YELLOW}$RESTORE_UUID${CLR_RESET} ($RESTORE_PART) -> /overlay"
 
-	REBOOT_HELPER="$RESTORE_TARGET/upper/root/reboot_after.sh"
-	mkdir -p "$RESTORE_TARGET/upper/root"
-	cat > "$REBOOT_HELPER" <<-'EOF'
-	#!/bin/sh
-	# RESTORE-ARCHIVE
-	WAIT_BEFORE_REBOOT=20
-	rm -f /root/reboot_after.sh
-	uci -q delete ksmbd.overlaybackup
-	uci -q commit ksmbd
-	if command -v ksmbd.useradmin >/dev/null 2>&1; then
-		ksmbd.useradmin -d 12345 >/dev/null 2>&1
-	fi
-	sed -i '/^12345:/d' /etc/passwd
-	[ -f /etc/shadow ] && sed -i '/^12345:/d' /etc/shadow
-	sed -i '/^\/root\/reboot_after\.sh$/d' /etc/rc.local 2>/dev/null || true
-	mkdir -p /overlay
-	sleep 1
-	sync
-	sleep "$WAIT_BEFORE_REBOOT"
-	if ! mount | grep -q ' /rom/overlay ' && mount | grep -q ' /overlay '; then
-		rm -f /flagfile
-		/etc/init.d/ac_recovery.sh stop
-		exit 0
-	fi
-	sync
-	delay="40"
-	setsid sh -c "
-		trap '' TERM
-		sleep $delay
-		echo b > /proc/sysrq-trigger
-		sleep 1
-		reboot -f
-	" &
-	sleep 1
-	reboot
-EOF
-	chmod +x "$REBOOT_HELPER"
-
-	if [ ! -f "$RESTORE_TARGET/upper/etc/rc.local" ]; then
-		printf '#!/bin/sh\n# Put your custom commands here that should be executed once\n# the system init finished. By default this file does nothing.\n\nexit 0\n' > "$RESTORE_TARGET/upper/etc/rc.local"
-	fi
-	if ! grep -q '^/root/reboot_after.sh$' "$RESTORE_TARGET/upper/etc/rc.local"; then
-		sed -i '/^exit 0/i /root/reboot_after.sh' "$RESTORE_TARGET/upper/etc/rc.local"
-	fi
-	chmod +x "$RESTORE_TARGET/upper/etc/rc.local"
+	create_reboot_helper "$RESTORE_TARGET" "RESTORE-ARCHIVE"
 
 	sync
 	sleep 2
@@ -1933,9 +1964,7 @@ if [ "$MODE" = "fallback_fix" ]; then
 
 	echo
 	echo "      очищаю fstab.extroot/rwm..."
-	uci -q delete fstab.extroot
-	uci -q delete fstab.rwm
-	uci commit fstab
+	clear_fstab_extroot
 	echo "      fstab очищен."
 
 	echo "      создаю /overlay..."
@@ -2049,69 +2078,14 @@ if [ "$MODE" = "restore" ]; then
 	echo -e "${CLR_GREEN}      маркеры overlay подтверждены${CLR_RESET}"
 
 	if [ -d "$UBI_MNT/upper/etc/config" ]; then
-		uci -c "$UBI_MNT/upper/etc/config" -q delete fstab.extroot
-		uci -c "$UBI_MNT/upper/etc/config" -q delete fstab.rwm
-		uci -c "$UBI_MNT/upper/etc/config" commit fstab
+		clear_fstab_extroot "$UBI_MNT/upper/etc/config"
 		echo "      fstab внутри $UBI_DEV очищен."
 	fi
 
-	uci -q delete fstab.extroot
-	uci -q delete fstab.rwm
-	uci commit fstab
+	clear_fstab_extroot
 	echo "      fstab в живой системе очищен."
 
-	mkdir -p "$UBI_MNT/upper/root"
-
-	cat > "$UBI_MNT/upper/root/reboot_after.sh" <<-'EOF'
-	#!/bin/sh
-	# RESTORE
-	WAIT_BEFORE_REBOOT=20
-	rm -f /root/reboot_after.sh
-	uci -q delete ksmbd.overlaybackup
-	uci -q commit ksmbd
-	if command -v ksmbd.useradmin >/dev/null 2>&1; then
-		ksmbd.useradmin -d 12345 >/dev/null 2>&1
-	fi
-	sed -i '/^12345:/d' /etc/passwd
-	[ -f /etc/shadow ] && sed -i '/^12345:/d' /etc/shadow
-	sed -i '/^\/root\/reboot_after\.sh$/d' /etc/rc.local 2>/dev/null || true
-	mkdir -p /overlay
-	sleep 1
-	sync
-	sleep "$WAIT_BEFORE_REBOOT"
-	if ! mount | grep -q ' /rom/overlay ' && mount | grep -q ' /overlay '; then
-		rm -f /flagfile
-		/etc/init.d/ac_recovery.sh stop
-		exit 0
-	fi
-
-	sync
-	delay="40"
-
-	setsid sh -c "
-		trap '' TERM
-		sleep $delay
-		echo b > /proc/sysrq-trigger
-		sleep 1
-		reboot -f
-	" &
-
-	sleep 1
-	reboot
-
-EOF
-	chmod +x "$UBI_MNT/upper/root/reboot_after.sh"
-
-	mkdir -p "$UBI_MNT/upper/etc"
-	if [ ! -f "$UBI_MNT/upper/etc/rc.local" ]; then
-		printf '#!/bin/sh\n# Put your custom commands here that should be executed once\n# the system init finished. By default this file does nothing.\n\nexit 0\n' > "$UBI_MNT/upper/etc/rc.local"
-	fi
-	if ! grep -q '^/root/reboot_after.sh$' "$UBI_MNT/upper/etc/rc.local"; then
-		sed -i '/^exit 0/i /root/reboot_after.sh' "$UBI_MNT/upper/etc/rc.local"
-	fi
-	chmod +x "$UBI_MNT/upper/etc/rc.local"
-	sync
-	sleep 3
+	create_reboot_helper "$UBI_MNT/upper" "RESTORE"
 
 	cp /tmp/usb-extroot.log "$UBI_MNT/upper/root/usb-extroot.log" 2>/dev/null || true
 	mkdir -p "$UBI_MNT/overlay"
@@ -2552,18 +2526,11 @@ if cp "$BACKUP_ARCHIVE" "$MNT/usb-extroot-backups/" 2>/dev/null; then
     ARCH_NAME=$(basename "$BACKUP_ARCHIVE")
     echo -e "${CLR_GREEN}      архив сохранён на USB: /usb-extroot-backups/$ARCH_NAME${CLR_RESET}"
 
-    TOTAL=$(ls -1 "$MNT/usb-extroot-backups"/overlay_backup_*.tar.gz "$MNT/usb-extroot-backups"/autobackup_*.tar.gz 2>/dev/null | wc -l)
-    if [ "$TOTAL" -gt 30 ]; then
-        REMOVE_COUNT=$((TOTAL - 30))
-        ls -1t "$MNT/usb-extroot-backups"/overlay_backup_*.tar.gz "$MNT/usb-extroot-backups"/autobackup_*.tar.gz 2>/dev/null | tail -n "$REMOVE_COUNT" | while read -r old; do
-            rm -f "$old"
-            echo "      ротация: удалён старый архив $(basename "$old")"
-        done
-        TOTAL_AFTER=$(ls -1 "$MNT/usb-extroot-backups"/overlay_backup_*.tar.gz "$MNT/usb-extroot-backups"/autobackup_*.tar.gz 2>/dev/null | wc -l)
-        echo -e "${CLR_GREEN}      на USB сейчас архивов: $TOTAL_AFTER${CLR_RESET}"
-    else
-        echo -e "${CLR_GREEN}      на USB сейчас архивов: $TOTAL${CLR_RESET}"
-    fi
+    rotate_backups "$MNT/usb-extroot-backups" 30 "overlay_backup_*.tar.gz"
+    rotate_backups "$MNT/usb-extroot-backups" 30 "autobackup_*.tar.gz"
+    
+    TOTAL_AFTER=$(ls -1 "$MNT/usb-extroot-backups"/overlay_backup_*.tar.gz "$MNT/usb-extroot-backups"/autobackup_*.tar.gz 2>/dev/null | wc -l)
+    echo -e "${CLR_GREEN}      на USB сейчас архивов: $TOTAL_AFTER${CLR_RESET}"
 else
     echo -e "${CLR_ORANGE}      не смог скопировать архив на USB${CLR_RESET}"
 fi
@@ -2585,7 +2552,7 @@ echo
 STAGE9="[9/9] fstab"
 echo "$STAGE9 ..."
 
-UUID=$(block info "$PART" | grep -o 'UUID="[^"]*"' | cut -d'"' -f2)
+UUID=$(get_partition_uuid "$PART")
 if [ -z "$UUID" ]; then
 	sleep 1
 	mkdir -p "$MNT/upper/root"
@@ -2595,21 +2562,8 @@ if [ -z "$UUID" ]; then
 	fatal "$STAGE9" "Не получил UUID для $PART."
 fi
 
-uci -q delete fstab.extroot
-uci set fstab.extroot=mount
-uci set fstab.extroot.uuid="$UUID"
-uci set fstab.extroot.target="/overlay"
-uci set fstab.extroot.enabled="1"
-uci -q delete fstab.rwm
-uci commit fstab
-
-uci -c "$CFG" -q delete fstab.extroot
-uci -c "$CFG" set fstab.extroot=mount
-uci -c "$CFG" set fstab.extroot.uuid="$UUID"
-uci -c "$CFG" set fstab.extroot.target="/overlay"
-uci -c "$CFG" set fstab.extroot.enabled="1"
-uci -c "$CFG" -q delete fstab.rwm
-uci -c "$CFG" commit fstab
+apply_fstab_extroot "$UUID"
+apply_fstab_extroot "$UUID" "$CFG"
 
 echo -e "      extroot: UUID=${CLR_YELLOW}$UUID${CLR_RESET} -> /overlay"
 echo "Проверка живого fstab:"
@@ -2618,60 +2572,7 @@ uci show fstab 2>/dev/null | grep -E 'extroot' || echo "      (extroot не на
 echo "Проверка fstab на USB:"
 grep -E 'extroot' "$CFG/fstab" || echo "      (extroot не найден!)"
 
-REBOOT_HELPER="$MNT/upper/root/reboot_after.sh"
-mkdir -p "$MNT/upper/root"
-
-sleep 1; sync
-cp /tmp/usb-extroot.log "$MNT/upper/root/usb-extroot.log" 2>/dev/null || true
-
-cat > "$REBOOT_HELPER" <<-'EOF'
-	#!/bin/sh
-	# MAIN
-	WAIT_BEFORE_REBOOT=20
-
-	rm -f /root/reboot_after.sh
-	uci -q delete ksmbd.overlaybackup
-	uci -q commit ksmbd
-	if command -v ksmbd.useradmin >/dev/null 2>&1; then
-		ksmbd.useradmin -d 12345 >/dev/null 2>&1
-	fi
-	sed -i '/^12345:/d' /etc/passwd
-	[ -f /etc/shadow ] && sed -i '/^12345:/d' /etc/shadow
-	sed -i '/^\/root\/reboot_after\.sh$/d' /etc/rc.local 2>/dev/null || true
-
-	mkdir -p /overlay
-	sleep 1
-	sync
-
-	sleep "$WAIT_BEFORE_REBOOT"
-
-	if ! mount | grep -q ' /rom/overlay ' && mount | grep -q ' /overlay '; then
-		rm -f /flagfile
-		/etc/init.d/ac_recovery.sh stop
-		exit 0
-	fi
-
-	sync
-	delay="40"
-	setsid sh -c "
-		trap '' TERM
-		sleep $delay
-		echo b > /proc/sysrq-trigger
-		sleep 1
-		reboot -f
-	" &
-	sleep 1
-	reboot
-
-EOF
-chmod +x "$REBOOT_HELPER"
-if [ ! -f "$MNT/upper/etc/rc.local" ]; then
-	printf '#!/bin/sh\n# Put your custom commands here that should be executed once\n# the system init finished. By default this file does nothing.\n\nexit 0\n' > "$MNT/upper/etc/rc.local"
-fi
-if ! grep -q '^/root/reboot_after.sh$' "$MNT/upper/etc/rc.local"; then
-	sed -i '/^exit 0/i /root/reboot_after.sh' "$MNT/upper/etc/rc.local"
-fi
-chmod +x "$MNT/upper/etc/rc.local"
+create_reboot_helper "$MNT/upper" "MAIN"
 
 sync
 sleep 3
@@ -2696,8 +2597,6 @@ if [ "$BATCH" != "1" ]; then
 	echo -e "${CLR_YELLOW}    user: 12345   password: 12345${CLR_RESET}"
 	echo
 fi
-
-
 
 echo -e "${CLR_ORANGE}    При перезагрузке  возможно зависание роутера!${CLR_RESET}"
 echo -e "${CLR_ORANGE}    Перезапустите роутер отключив и подав питание.${CLR_RESET}"
