@@ -1,6 +1,6 @@
 #!/bin/sh
 # ============================================================
-#  usb-extroot.sh  v0.1.42.00-draft
+#  usb-extroot.sh  v0.1.42.01-draft
 #  Перенос overlay OpenWrt на USB-накопитель (extroot)
 #  Лог: /tmp/usb-extroot.log
 #  Бэкап: /tmp/.usb-extroot-x7k2m9q4p1w8/
@@ -8,7 +8,7 @@
 #  sh <( wget -qO- https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft/usb-extroot-install.sh )
 #  sh /usb-extroot-install.sh
 # ============================================================
-ver="v0.1.42.00-draft"
+ver="v0.1.42.01-draft"
 SRC_BASE="https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft"
 TEST_MODE=0
 
@@ -644,8 +644,24 @@ is_removable_storage() {
 }
 
 describe() {
-	local dev="$1" b parent
+	local dev="$1" b parent size_str
 	b=$(basename "$1")
+
+	if is_internal_dev "$dev"; then
+		local mp=$(awk -v d="$dev" '$1==d {print $2; exit}' /proc/mounts)
+		if [ -n "$mp" ]; then
+			local size_mb=$(df -m "$mp" 2>/dev/null | awk 'NR==2 {print $2}')
+			if [ -n "$size_mb" ] && [ "$size_mb" -gt 1024 ]; then
+				size_str=$(awk "BEGIN {printf \"%.1fG\", $size_mb/1024}")
+			else
+				size_str="${size_mb:-?}M"
+			fi
+			echo "$dev $size_str Внутренняя память"
+		else
+			echo "$dev Внутренняя память"
+		fi
+		return
+	fi
 
 	case "$b" in
 		sd[a-z][0-9]*|mmcblk[0-9]*p[0-9]*|nvme[0-9]*n[0-9]*p[0-9]*|vd[a-z][0-9]*)
@@ -1103,6 +1119,19 @@ if [ "$BATCH" = "1" ] && [ -n "$BATCH_ACTION" ]; then
 			exit 0
 			;;
 
+
+
+
+
+
+
+
+
+
+
+
+
+
 		switch-targets)
 			ensure_dependencies
 			if command -v switch_overlay_scan_targets >/dev/null 2>&1; then
@@ -1114,6 +1143,55 @@ if [ "$BATCH" = "1" ] && [ -n "$BATCH_ACTION" ]; then
 			fi
 			exit 0
 			;;
+
+		backup-sources)
+			qdev=$(quick_overlay_dev)
+			if [ -n "$qdev" ]; then
+				echo "active|Текущий активный носитель ($(describe "$qdev"))"
+			fi
+
+			if [ -n "$qdev" ] && ! is_internal_dev "$qdev"; then
+				int_dev=$(find_internal_overlay_dev)
+				if [ -n "$int_dev" ]; then
+					echo "internal|Внутренняя память роутера"
+				fi
+			fi
+
+			for mnt in $(awk '$3=="ext4" || $3=="f2fs" || $3=="btrfs" {print $2}' /proc/mounts); do
+				dev=$(awk -v m="$mnt" '$2==m {print $1; exit}' /proc/mounts)
+				[ -z "$dev" ] && continue
+				[ "$dev" = "$qdev" ] && continue
+
+				if [ -d "$mnt/upper/etc/config" ] || [ -d "$mnt/etc/config" ]; then
+					size_mb=$(df -m "$mnt" 2>/dev/null | awk 'NR==2 {print $2}')
+					if [ -n "$size_mb" ] && [ "$size_mb" -gt 1024 ]; then
+						size_gb=$(awk "BEGIN {printf \"%.1f\", $size_mb/1024}")
+						size_str="${size_gb} ГБ"
+					else
+						size_str="${size_mb:-?} МБ"
+					fi
+					parent_name=$(basename "$(parent_dev "$dev")")
+					desc="Раздел $dev ($size_str, диск $parent_name)"
+					echo "$dev|$desc"
+				fi
+			done
+			exit 0
+			;;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 		archive-info)
 			latest=$(ls -t /tmp/.usb-extroot-*/overlay_backup_*.tar.gz 2>/dev/null | head -1)
@@ -1553,7 +1631,23 @@ if [ "$MODE" = "backup" ] || [ "$MODE" = "backup_manual" ]; then
 
 
 
-	BK_OVERLAY_DEV=$(quick_overlay_dev)
+	if [ -n "$BATCH_DEVICE" ]; then
+		if [ "$BATCH_DEVICE" = "active" ]; then
+			BK_OVERLAY_DEV=$(quick_overlay_dev)
+		elif [ "$BATCH_DEVICE" = "internal" ]; then
+			BK_OVERLAY_DEV=$(find_internal_overlay_dev)
+			if [ $? -ne 0 ]; then
+				die "$CHOICE_TEXT" "Внутренний overlay не найден."
+			fi
+		else
+			BK_OVERLAY_DEV="$BATCH_DEVICE"
+		fi
+	else
+		BK_OVERLAY_DEV=$(quick_overlay_dev)
+	fi
+
+
+
 	if [ -z "$BK_OVERLAY_DEV" ]; then
 		if [ "$BK_TYPE" = "manual" ]; then
 			die "$CHOICE_TEXT" "Не нашёл устройство /overlay."
@@ -1565,8 +1659,6 @@ if [ "$MODE" = "backup" ] || [ "$MODE" = "backup_manual" ]; then
 	BK_IS_INTERNAL=0
 	if is_internal_dev "$BK_OVERLAY_DEV"; then
 		if [ "$BK_TYPE" = "manual" ]; then
-			# Ручной бэкап с внутреннего overlay разрешён.
-			# Архив кладём в /tmp (в overlay НЕ пишем), пользователь скачает через веб.
 			BK_IS_INTERNAL=1
 		else
 			echo "backup: overlay на внутреннем носителе ($BK_OVERLAY_DEV), пропуск"
@@ -1575,6 +1667,10 @@ if [ "$MODE" = "backup" ] || [ "$MODE" = "backup_manual" ]; then
 	fi
 
 	BK_MNT=$(awk -v p="$BK_OVERLAY_DEV" '$1==p {print $2; exit}' /proc/mounts)
+
+
+
+
 	if [ -z "$BK_MNT" ] || [ ! -d "$BK_MNT" ]; then
 		if [ "$BK_TYPE" = "manual" ]; then
 			die "$CHOICE_TEXT" "Не нашёл точку монтирования $BK_OVERLAY_DEV."
@@ -1621,7 +1717,11 @@ if [ "$MODE" = "backup" ] || [ "$MODE" = "backup_manual" ]; then
 		exit 0
 	fi
 
-	if [ "$BK_AVAIL_KB" -lt $((BK_UPPER_KB * 2)) ]; then
+
+
+
+	# Для внешних дисков оставляем запас 2x. Для ОЗУ (tmpfs) не проверяем — пусть tar сам падает, если не влезет.
+	if [ "$BK_IS_INTERNAL" != "1" ] && [ "$BK_AVAIL_KB" -lt $((BK_UPPER_KB * 2)) ]; then
 		if [ "$BK_TYPE" = "manual" ]; then
 			die "$CHOICE_TEXT" "Мало места: upper=${BK_UPPER_KB}K, свободно=${BK_AVAIL_KB}K.
 Нужно минимум $((BK_UPPER_KB * 2))K."
@@ -1630,23 +1730,11 @@ if [ "$MODE" = "backup" ] || [ "$MODE" = "backup_manual" ]; then
 		exit 0
 	fi
 
+
+
+
 	[ -d "$BK_DIR" ] && \
 		find "$BK_DIR" -name '*.part' -mtime +1 -delete 2>/dev/null || true
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 	BK_TS=$(date +%Y-%m-%d_%H-%M-%S)
 	BK_FILE="$BK_DIR/${BK_PREFIX}_${BK_TS}.tar.gz"
