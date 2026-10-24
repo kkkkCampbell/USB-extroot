@@ -1,6 +1,6 @@
 #!/bin/sh
 # ============================================================
-#  usb-extroot.sh  v0.1.41.07-draft
+#  usb-extroot.sh  v0.1.41.08-draft
 #  Перенос overlay OpenWrt на USB-накопитель (extroot)
 #  Лог: /tmp/usb-extroot.log
 #  Бэкап: /tmp/.usb-extroot-x7k2m9q4p1w8/
@@ -8,7 +8,7 @@
 #  sh <( wget -qO- https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft/usb-extroot-install.sh )
 #  sh /usb-extroot-install.sh
 # ============================================================
-ver="v0.1.41.07-draft"
+ver="v0.1.41.08-draft"
 SRC_BASE="https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft"
 TEST_MODE=0
 
@@ -1701,6 +1701,34 @@ fi
 # ============================================================
 #  ВЕТКА restore_archive — развернуть архив на указанную флешку.
 # ============================================================
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 if [ "$MODE" = "restore_archive" ]; then
 	stage0_deps check
 
@@ -1724,15 +1752,73 @@ if [ "$MODE" = "restore_archive" ]; then
 	fi
 	echo "      архив: $ARCHIVE_PATH"
 
-	if [ -z "$BATCH_DEVICE" ] || [ ! -b "$BATCH_DEVICE" ]; then
-		die "$CHOICE_TEXT" "Целевое устройство не задано или не существует: $BATCH_DEVICE"
+	# ---- Внутренний overlay (UBI/UBIFS) ----
+	if [ "$BATCH_DEVICE" = "internal" ]; then
+		RESTORE_PART="internal"
+		RESTORE_TARGET="/overlay"
+		echo "      цель: внутренняя память роутера (/overlay)"
+
+		# --- Подход А: проверка свободного места по размеру архива ---
+		ARCHIVE_BYTES=$(wc -c < "$ARCHIVE_PATH" 2>/dev/null | tr -d ' ')
+		ARCHIVE_KB=$(( (ARCHIVE_BYTES + 1023) / 1024 ))
+
+		AVAIL_KB=$(df -k /overlay 2>/dev/null | awk 'NR==2 {print $4}')
+		if [ -z "$AVAIL_KB" ]; then
+			die "$CHOICE_TEXT" "Не смог определить свободное место на /overlay."
+		fi
+
+		# Запас 15%: журнал UBIFS, выравнивание, возможные различия сжатия.
+		NEED_KB=$(( ARCHIVE_KB + ARCHIVE_KB * 15 / 100 ))
+
+		echo "      архив: ${ARCHIVE_KB}K, свободно на /overlay: ${AVAIL_KB}K, нужно (с запасом): ${NEED_KB}K"
+
+		if [ "$AVAIL_KB" -lt "$NEED_KB" ]; then
+			die "$CHOICE_TEXT" "Мало места на /overlay для восстановления.
+	Архив (сжатый): ${ARCHIVE_KB}K
+	Свободно:      ${AVAIL_KB}K
+	Нужно:         ${NEED_KB}K (с запасом 15%)
+
+	Освободите место или используйте внешний носитель."
+		fi
+		echo -e "${CLR_GREEN}      места достаточно (по размеру архива)${CLR_RESET}"
+
+	else
+		# ---- Внешний накопитель (старая логика) ----
+		if [ -z "$BATCH_DEVICE" ] || [ ! -b "$BATCH_DEVICE" ]; then
+			die "$CHOICE_TEXT" "Целевое устройство не задано или не существует: $BATCH_DEVICE"
+		fi
+		RESTORE_PART="$BATCH_DEVICE"
+		RESTORE_TARGET=$(awk -v p="$RESTORE_PART" '$1==p {print $2; exit}' /proc/mounts)
+		if [ -z "$RESTORE_TARGET" ] || [ ! -d "$RESTORE_TARGET" ]; then
+			die "$CHOICE_TEXT" "Целевое устройство $RESTORE_PART не примонтировано."
+		fi
+		echo "      цель: $RESTORE_PART -> $RESTORE_TARGET"
 	fi
-	RESTORE_PART="$BATCH_DEVICE"
-	RESTORE_TARGET=$(awk -v p="$RESTORE_PART" '$1==p {print $2; exit}' /proc/mounts)
-	if [ -z "$RESTORE_TARGET" ] || [ ! -d "$RESTORE_TARGET" ]; then
-		die "$CHOICE_TEXT" "Целевое устройство $RESTORE_PART не примонтировано."
-	fi
-	echo "      цель: $RESTORE_PART -> $RESTORE_TARGET"
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 	if ! tar -tzf "$ARCHIVE_PATH" 2>/dev/null | grep -q '^overlay/upper/etc/config/'; then
 		die "$CHOICE_TEXT" "Это не бэкап overlay. В архиве нет пути overlay/upper/etc/config/.
@@ -1787,18 +1873,93 @@ if [ "$MODE" = "restore_archive" ]; then
 	fi
 	rm -rf "$RESTORE_TARGET/overlay"
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 	if [ ! -d "$RESTORE_TARGET/upper/etc/config" ]; then
 		die "$CHOICE_TEXT" "После распаковки в $RESTORE_TARGET/upper нет etc/config."
 	fi
 
-	RESTORE_UUID=$(get_partition_uuid "$RESTORE_PART")
-	if [ -z "$RESTORE_UUID" ]; then
-		die "$CHOICE_TEXT" "Не получил UUID для $RESTORE_PART."
-	fi
+	# ---- Перенос upper в целевой overlay ----
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	if [ "$RESTORE_PART" = "internal" ]; then
+		# Внутренний overlay: /overlay/upper
+		# К этому моменту общий код УЖЕ выполнил:
+		#   rm -rf /overlay/upper
+		#   mv /overlay/overlay/upper /overlay/upper
+		#   rm -rf /overlay/overlay
+		# То есть /overlay/upper уже содержит распакованный архив.
+		# Остаётся work, fstab и reboot-helper.
+		mkdir -p /overlay/work
 
-	RESTORE_CFG="$RESTORE_TARGET/upper/etc/config"
-	echo "      заменяю $RESTORE_CFG/fstab (без extroot)"
-	cat > "$RESTORE_CFG/fstab" <<FSTAB_EOF
+		clear_fstab_extroot
+		echo "      fstab в живой системе очищен (extroot не нужен)."
+
+		create_reboot_helper "/overlay/upper" "RESTORE-ARCHIVE"
+
+		echo -e "${CLR_GREEN}      upper перенесён во внутренний overlay${CLR_RESET}"
+
+	else
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+		# Внешний накопитель (старая логика)
+		RESTORE_UUID=$(get_partition_uuid "$RESTORE_PART")
+		if [ -z "$RESTORE_UUID" ]; then
+			die "$CHOICE_TEXT" "Не получил UUID для $RESTORE_PART."
+		fi
+
+		RESTORE_CFG="$RESTORE_TARGET/upper/etc/config"
+		echo "      заменяю $RESTORE_CFG/fstab (без extroot)"
+		cat > "$RESTORE_CFG/fstab" <<FSTAB_EOF
 config global
 	option anon_swap '0'
 	option anon_mount '0'
@@ -1808,32 +1969,84 @@ config global
 	option check_fs '0'
 FSTAB_EOF
 
-	clear_fstab_extroot
+		clear_fstab_extroot
 
-	echo "      настраиваю extroot во внутренней памяти (UBI)..."
-	UBI_DEV=$(find_internal_overlay_dev)
-	if [ -n "$UBI_DEV" ]; then
-		UBI_MNT=/tmp/ubi_restore
-		mkdir -p "$UBI_MNT"
-		if mount -t ubifs "$UBI_DEV" "$UBI_MNT" 2>/dev/null || mount "$UBI_DEV" "$UBI_MNT" 2>/dev/null; then
-			UBI_CFG="$UBI_MNT/upper/etc/config"
-			if [ -d "$UBI_CFG" ]; then
-				apply_fstab_extroot "$RESTORE_UUID" "$UBI_CFG"
-				echo "      extroot: UUID=$RESTORE_UUID -> /overlay (сохранено в UBI)"
+		echo "      настраиваю extroot во внутренней памяти (UBI)..."
+		UBI_DEV=$(find_internal_overlay_dev)
+		if [ -n "$UBI_DEV" ]; then
+			UBI_MNT=/tmp/ubi_restore
+			mkdir -p "$UBI_MNT"
+			if mount -t ubifs "$UBI_DEV" "$UBI_MNT" 2>/dev/null || mount "$UBI_DEV" "$UBI_MNT" 2>/dev/null; then
+				UBI_CFG="$UBI_MNT/upper/etc/config"
+				if [ -d "$UBI_CFG" ]; then
+					apply_fstab_extroot "$RESTORE_UUID" "$UBI_CFG"
+					echo "      extroot: UUID=$RESTORE_UUID -> /overlay (сохранено в UBI)"
+				fi
+				umount "$UBI_MNT" 2>/dev/null || true
+				rmdir "$UBI_MNT" 2>/dev/null || true
+			else
+				echo -e "${CLR_ORANGE}      ВНИМАНИЕ: не смог смонтировать UBI для записи extroot!${CLR_RESET}"
 			fi
-			umount "$UBI_MNT" 2>/dev/null || true
-			rmdir "$UBI_MNT" 2>/dev/null || true
-		else
-			echo -e "${CLR_ORANGE}      ВНИМАНИЕ: не смог смонтировать UBI для записи extroot!${CLR_RESET}"
 		fi
+
+		echo -e "      extroot: UUID=${CLR_YELLOW}$RESTORE_UUID${CLR_RESET} ($RESTORE_PART) -> /overlay"
+
+		create_reboot_helper "$RESTORE_TARGET" "RESTORE-ARCHIVE"
 	fi
-
-	echo -e "      extroot: UUID=${CLR_YELLOW}$RESTORE_UUID${CLR_RESET} ($RESTORE_PART) -> /overlay"
-
-	create_reboot_helper "$RESTORE_TARGET" "RESTORE-ARCHIVE"
 
 	sync
 	sleep 2
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
 
 	echo
 	echo -e "${CLR_GREEN}================================================================${CLR_RESET}"
