@@ -1,6 +1,6 @@
 #!/bin/sh
 # ============================================================
-#  usb-extroot.sh  v0.1.41.09-draft
+#  usb-extroot.sh  v0.1.42.00-draft
 #  Перенос overlay OpenWrt на USB-накопитель (extroot)
 #  Лог: /tmp/usb-extroot.log
 #  Бэкап: /tmp/.usb-extroot-x7k2m9q4p1w8/
@@ -8,7 +8,7 @@
 #  sh <( wget -qO- https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft/usb-extroot-install.sh )
 #  sh /usb-extroot-install.sh
 # ============================================================
-ver="v0.1.41.09-draft"
+ver="v0.1.42.00-draft"
 SRC_BASE="https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft"
 TEST_MODE=0
 
@@ -2624,7 +2624,20 @@ if [ "$MODE" = format ]; then
 		fi
 
 		echo "      диск найден заново: $FOUND"
+		
+		if [ -z "$FOUND" ]; then
+			fatal "$STAGE7" "USB-диск не переподключился за 20 сек."
+		fi
 
+		echo "      диск найден заново: $FOUND"
+
+		# Удаляем старый узел, чтобы block-mount не видел дубль
+		if [ "$(basename "$TARGET")" != "$(basename "$FOUND")" ]; then
+			echo "      удаляю старый узел /dev/$(basename "$TARGET")*"
+			rm -f /dev/$(basename "$TARGET")*
+		fi
+
+		TARGET="$FOUND"
 		TARGET="$FOUND"
 		PART=""
 		for p in ${TARGET}*; do
@@ -2670,7 +2683,9 @@ if [ "$MODE" = format ]; then
 
 	i=1
 	while [ $i -le 3 ]; do
-		if mkfs.ext4 -F -L extroot "$PART" >/dev/null 2>&1; then
+
+
+		if mkfs.ext4 -F "$PART" >/dev/null 2>&1; then
 			mkfs_success=1
 			break
 		fi
@@ -2679,11 +2694,13 @@ if [ "$MODE" = format ]; then
 	done
 
 	if [ "$mkfs_success" != "1" ]; then
-		mkfs.ext4 -F -L extroot "$PART"
+		mkfs.ext4 -F "$PART"
 		fatal "$STAGE7" "mkfs.ext4 на $PART упал."
 	fi
 
-	echo -e "${CLR_GREEN}      отформатировано: $PART (ext4, label=extroot)${CLR_RESET}"
+	echo -e "${CLR_GREEN}      отформатировано: $PART (ext4)${CLR_RESET}"
+
+
 fi
 
 MNT_TMP=$(awk -v p="$PART" '$1==p {print $2; exit}' /proc/mounts)
