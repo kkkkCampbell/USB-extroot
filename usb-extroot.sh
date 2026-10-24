@@ -1,6 +1,6 @@
 #!/bin/sh
 # ============================================================
-#  usb-extroot.sh  v0.1.41.05-draft
+#  usb-extroot.sh  v0.1.41.06-draft
 #  Перенос overlay OpenWrt на USB-накопитель (extroot)
 #  Лог: /tmp/usb-extroot.log
 #  Бэкап: /tmp/.usb-extroot-x7k2m9q4p1w8/
@@ -8,7 +8,7 @@
 #  sh <( wget -qO- https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft/usb-extroot-install.sh )
 #  sh /usb-extroot-install.sh
 # ============================================================
-ver="v0.1.41.05-draft"
+ver="v0.1.41.06-draft"
 SRC_BASE="https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft"
 TEST_MODE=0
 
@@ -1532,6 +1532,22 @@ if [ "$MODE" = "backup" ] || [ "$MODE" = "backup_manual" ]; then
 		have uci || die "$CHOICE_TEXT" "uci не найден."
 	fi
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 	BK_OVERLAY_DEV=$(quick_overlay_dev)
 	if [ -z "$BK_OVERLAY_DEV" ]; then
 		if [ "$BK_TYPE" = "manual" ]; then
@@ -1541,13 +1557,16 @@ if [ "$MODE" = "backup" ] || [ "$MODE" = "backup_manual" ]; then
 		exit 0
 	fi
 
+	BK_IS_INTERNAL=0
 	if is_internal_dev "$BK_OVERLAY_DEV"; then
 		if [ "$BK_TYPE" = "manual" ]; then
-			die "$CHOICE_TEXT" "Overlay на внутреннем носителе ($BK_OVERLAY_DEV).
-Manual backup доступен только когда /overlay на съёмной флешке."
+			# Ручной бэкап с внутреннего overlay разрешён.
+			# Архив кладём в /tmp (в overlay НЕ пишем), пользователь скачает через веб.
+			BK_IS_INTERNAL=1
+		else
+			echo "backup: overlay на внутреннем носителе ($BK_OVERLAY_DEV), пропуск"
+			exit 0
 		fi
-		echo "backup: overlay на внутреннем носителе ($BK_OVERLAY_DEV), пропуск"
-		exit 0
 	fi
 
 	BK_MNT=$(awk -v p="$BK_OVERLAY_DEV" '$1==p {print $2; exit}' /proc/mounts)
@@ -1567,8 +1586,16 @@ Manual backup доступен только когда /overlay на съёмн�
 		exit 0
 	fi
 
-	BK_DIR="$BK_MNT/usb-extroot-backups"
-	[ -n "$BK_SUBDIR" ] && BK_DIR="$BK_DIR/$BK_SUBDIR"
+	if [ "$BK_IS_INTERNAL" = "1" ]; then
+		# Архив для внутреннего overlay — в /tmp, а не в /overlay/upper/...
+		BK_DIR="/tmp/.usb-extroot-x7k2m9q4p1w8"
+		[ -n "$BK_SUBDIR" ] && BK_DIR="$BK_DIR/$BK_SUBDIR"
+		BK_DST_FS="/tmp"
+	else
+		BK_DIR="$BK_MNT/usb-extroot-backups"
+		[ -n "$BK_SUBDIR" ] && BK_DIR="$BK_DIR/$BK_SUBDIR"
+		BK_DST_FS="$BK_MNT"
+	fi
 
 	if ! mkdir -p "$BK_DIR" 2>/dev/null; then
 		if [ "$BK_TYPE" = "manual" ]; then
@@ -1579,7 +1606,7 @@ Manual backup доступен только когда /overlay на съёмн�
 	fi
 
 	BK_UPPER_KB=$(du -sk "$BK_MNT/upper" 2>/dev/null | awk '{print $1}')
-	BK_AVAIL_KB=$(df -k "$BK_MNT" 2>/dev/null | awk 'NR==2 {print $4}')
+	BK_AVAIL_KB=$(df -k "$BK_DST_FS" 2>/dev/null | awk 'NR==2 {print $4}')
 
 	if [ -z "$BK_UPPER_KB" ] || [ -z "$BK_AVAIL_KB" ]; then
 		if [ "$BK_TYPE" = "manual" ]; then
@@ -1598,8 +1625,23 @@ Manual backup доступен только когда /overlay на съёмн�
 		exit 0
 	fi
 
-	[ -d "$BK_MNT/usb-extroot-backups" ] && \
-		find "$BK_MNT/usb-extroot-backups" -name '*.part' -mtime +1 -delete 2>/dev/null || true
+	[ -d "$BK_DIR" ] && \
+		find "$BK_DIR" -name '*.part' -mtime +1 -delete 2>/dev/null || true
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 	BK_TS=$(date +%Y-%m-%d_%H-%M-%S)
 	BK_FILE="$BK_DIR/${BK_PREFIX}_${BK_TS}.tar.gz"
