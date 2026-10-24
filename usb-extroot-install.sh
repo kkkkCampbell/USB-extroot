@@ -309,16 +309,31 @@ method_devices() {
     printf '] }\n'
 }
 
-# --- Автономное сканирование доступных оверлеев с фильтрацией дублей и красивым описанием ---
+# --- Автономное сканирование доступных оверлеев с фильтрацией дублей и исключением текущего загрузочного накопителя ---
 method_switch_targets() {
     local first=1 dev mp size_mb size_gb desc parent_name
+    local status_out is_extroot="" cur_dev=""
+    
+    status_out=$(run_script_action status)
+    is_extroot=$(printf '%s' "$status_out" | awk -F= '$1=="extroot" {print $2}')
+    cur_dev=$(printf '%s' "$status_out" | awk -F= '$1=="extroot_dev" {print $2}')
+
     printf '{ "result": ['
     
-    # Собираем уникальные устройства, исключая дубликаты монтирования
+    # Если загружены с внешнего накопителя, добавляем в список внутреннюю память (диск восстановления)
+    if [ "$is_extroot" = "yes" ]; then
+        printf '{"dev":"internal","desc":"Внутренняя память роутера"}'
+        first=0
+    fi
+
+    # Собираем уникальные устройства, исключая дубликаты монтирования и текущий активный накопитель
     for dev in $(awk '$3=="ext4" || $3=="f2fs" || $3=="btrfs" {print $1}' /proc/mounts 2>/dev/null | awk '!seen[$0]++'); do
         case "$dev" in
             /dev/ubi*|/dev/mtdblock*|/dev/root) continue ;;
         esac
+        
+        # Не предлагаем диск, с которого в данный момент загружена система
+        [ "$dev" = "$cur_dev" ] && continue
         
         mp=$(awk -v d="$dev" '$1==d {print $2; exit}' /proc/mounts 2>/dev/null)
         [ -n "$mp" ] || continue
@@ -327,7 +342,6 @@ method_switch_targets() {
             size_mb=$(df -m "$mp" 2>/dev/null | awk 'NR==2 {print $2}')
             parent_name=$(basename "$(parent_dev "$dev")")
             
-            # Красивое форматирование размера для человека
             if [ -n "$size_mb" ] && [ "$size_mb" -gt 1024 ]; then
                 size_gb=$(awk "BEGIN {printf \"%.1f\", $size_mb/1024}")
                 size_str="${size_gb} ГБ"
@@ -454,7 +468,7 @@ method_run() {
             if [ "$mode" != "switch_overlay" ] && [ "${device#/dev/}" = "$device" ]; then
                 _fail "invalid device '$device'"; return
             fi
-            if [ "$mode" != "switch_overlay" ] && ! is_removable_storage "$device"; then
+            if [ "$mode" != "switch_overlay" ] && [ "$device" != "internal" ] && ! is_removable_storage "$device"; then
                 _fail "device '$device' is not removable (only USB/SD allowed)"; return
             fi
             ;;
@@ -665,7 +679,11 @@ return view.extend({
             'click': function() {
                 var dev = switchDeviceSelect.value;
                 if (!dev) { ui.addNotification(null, E('p', {}, 'Выберите накопитель для переключения.'), 'danger'); return; }
-                self.runOp('switch_overlay', dev, null, logPre);
+                if (dev === 'internal') {
+                    self.runOp('restore', null, null, logPre);
+                } else {
+                    self.runOp('switch_overlay', dev, null, logPre);
+                }
             }
         }, 'Сменить загрузочный накопитель');
 
@@ -994,8 +1012,15 @@ return view.extend({
         Promise.all([ callArchiveList(), callDevices() ]).then(function(results) {
             var list = unwrap(results[0]);
             var devices = unwrap(results[1]) || [];
-            if (!list || list.length === 0) { ui.addNotification(null, E('p', {}, 'На примонтированных разделах нет архивов.'), 'warning'); return; }
-            if (!devices || devices.length === 0) { ui.addNotification(null, E('p', {}, 'Нет доступных съёмных накопителей.'), 'danger'); return; }
+            
+            if (!Array.isArray(list) || list.length === 0) { 
+                ui.addNotification(null, E('p', {}, 'На примонтированных разделах нет архивов.'), 'warning'); 
+                return; 
+            }
+            if (!Array.isArray(devices) || devices.length === 0) { 
+                ui.addNotification(null, E('p', {}, 'Нет доступных съёмных накопителей.'), 'danger'); 
+                return; 
+            }
 
             var archiveSelect = E('select', { 'style': 'width:100%;padding:4px;margin-bottom:10px;' }, [
                 E('option', { 'value': '' }, '— выберите архив —')
