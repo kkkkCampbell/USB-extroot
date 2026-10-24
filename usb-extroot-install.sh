@@ -379,6 +379,25 @@ method_log() {
     printf '{ "result": { "chunk": '; printf '%s' "$chunk" | esc_json; printf ' } }\n'
 }
 
+method_backup_sources() {
+    local out
+    out=$(run_script_action backup-sources)
+    if [ "$out" = "TIMEOUT" ]; then echo '{ "error": "script timeout" }'; return
+    elif [ "$out" = "NOT_FOUND" ]; then echo '{ "error": "usb-extroot.sh not found" }'; return
+    elif [ "${out#SCRIPT_ERROR}" != "$out" ]; then
+        printf '{ "error": %s }\n' "$(printf '%s' "$out" | esc_json)"; return
+    fi
+    printf '{ "result": ['
+    printf '%s\n' "$out" | awk -F'|' '
+        NF>=2 { if (cnt++) printf ",";
+                dev=$1; desc=$2;
+                gsub(/\\/, "\\\\", dev); gsub(/"/, "\\\"", dev);
+                gsub(/\\/, "\\\\", desc); gsub(/"/, "\\\"", desc);
+                printf "{\"dev\":\"%s\",\"desc\":\"%s\"}", dev, desc }
+    '
+    printf '] }\n'
+}
+
 method_archive_info() {
     local out
     out=$(run_script_action archive-info)
@@ -467,6 +486,20 @@ method_run() {
         *) _fail "invalid mode '$mode'"; return ;;
     esac
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     case "$mode" in
         format|noformat|restore_archive|switch_overlay)
             if [ -z "$device" ]; then
@@ -480,7 +513,24 @@ method_run() {
                 _fail "device '$device' is not removable (only USB/SD allowed)"; return
             fi
             ;;
+        backup_manual)
+            if [ -n "$device" ] && [ "$device" != "active" ] && [ "$device" != "internal" ] && [ "${device#/dev/}" = "$device" ]; then
+                _fail "invalid device '$device'"; return
+            fi
+            ;;
     esac
+
+
+
+
+
+
+
+
+
+
+
+
 
     case "$mode" in
         format|noformat|switch_overlay)
@@ -524,7 +574,7 @@ method_run() {
 
 case "$1" in
     list)
-        echo '{ "status": {}, "devices": {}, "switch_targets": {}, "log": { "offset": 0 }, "archive_info": {}, "archive_list": {}, "version": {}, "api_read_token": {}, "api_write_token": {}, "abort_sleep": {}, "run": { "params": {} } }'
+        echo '{ "status": {}, "devices": {}, "switch_targets": {}, "log": { "offset": 0 }, "archive_info": {}, "archive_list": {}, "backup_sources": {}, "version": {}, "api_read_token": {}, "api_write_token": {}, "abort_sleep": {}, "run": { "params": {} } }'
         ;;
     call)
         method="$2"
@@ -535,6 +585,7 @@ case "$1" in
             log)             method_log ;;
             archive_info)    method_archive_info ;;
             archive_list)    method_archive_list ;;
+            backup_sources)  method_backup_sources ;;
             version)         method_version ;;
             api_read_token)  method_api_read_token ;;
             api_write_token) method_api_write_token ;;
@@ -561,7 +612,7 @@ cat > "$BASE_DIR/acl.json" <<'ACL_EOF'
         "read": {
             "ubus": {
                 "luci.usb-extroot": [
-                    "status", "devices", "switch_targets", "log", "archive_info", "archive_list",
+                    "status", "devices", "switch_targets", "log", "archive_info", "archive_list", "backup_sources",
                     "version", "api_read_token"
                 ]
             }
@@ -601,13 +652,21 @@ cat > "$BASE_DIR/main.js" <<'VIEW_EOF'
 'require rpc';
 'require dom';
 
+
 var callStatus = rpc.declare({ object: 'luci.usb-extroot', method: 'status' });
 var callDevices = rpc.declare({ object: 'luci.usb-extroot', method: 'devices' });
 var callSwitchTargets = rpc.declare({ object: 'luci.usb-extroot', method: 'switch_targets' });
 var callLog = rpc.declare({ object: 'luci.usb-extroot', method: 'log' });
 var callArchiveInfo = rpc.declare({ object: 'luci.usb-extroot', method: 'archive_info' });
+
+
 var callArchiveList = rpc.declare({ object: 'luci.usb-extroot', method: 'archive_list' });
+var callBackupSources = rpc.declare({ object: 'luci.usb-extroot', method: 'backup_sources' });
 var callVersion = rpc.declare({ object: 'luci.usb-extroot', method: 'version' });
+
+
+
+
 var callApiReadToken = rpc.declare({ object: 'luci.usb-extroot', method: 'api_read_token' });
 var callApiWriteToken = rpc.declare({ object: 'luci.usb-extroot', method: 'api_write_token' });
 var callAbortSleep = rpc.declare({ object: 'luci.usb-extroot', method: 'abort_sleep' });
@@ -697,10 +756,25 @@ return view.extend({
             'click': function() { self.showArchiveList(logPre); }
         }, 'Восстановить из архива на флешке');
 
+
+
+
+
+
+
+
         var btnBackup = E('button', {
             'class': 'cbi-button', 'style': 'margin-right:32px;', 'id': 'btn-backup-manual', 'disabled': true,
-            'click': function() { self.runBackupManual(logPre); }
+            'click': function() { self.showBackupSourceDialog(logPre); }
         }, 'Создать бэкап сейчас');
+
+
+
+
+
+
+
+
 
         var btnUpload = E('button', {
             'class': 'cbi-button', 'style': 'margin-right:8px;', 'id': 'btn-upload-archive', 'disabled': true,
@@ -917,15 +991,72 @@ return view.extend({
         ]);
     },
 
-    runBackupManual: function(logPre) {
+
+
+
+
+
+
+
+
+
+
+
+    showBackupSourceDialog: function(logPre) {
         var self = this;
         if (!writeToken) { ui.addNotification(null, E('p', {}, 'Нет прав на запись (нет write-ACL).'), 'danger'); return; }
+        callBackupSources().then(function(res) {
+            var sources = unwrap(res);
+            if (!Array.isArray(sources) || sources.length === 0) {
+                ui.addNotification(null, E('p', {}, 'Нет доступных источников для бэкапа.'), 'danger');
+                return;
+            }
+            var sourceSelect = E('select', { 'style': 'width:100%;padding:4px;margin-bottom:10px;' }, []);
+            sources.forEach(function(s) {
+                sourceSelect.appendChild(E('option', { 'value': s.dev }, s.desc));
+            });
+
+            var body = E('div', {}, [
+                E('p', { 'style': 'font-weight:bold;' }, 'Выберите источник для создания архива:'),
+                sourceSelect
+            ]);
+
+            var footer = E('div', { 'style': 'display:flex;gap:8px;justify-content:flex-end;' }, [
+                E('button', { 'class': 'cbi-button cbi-button-reset', 'click': function() { ui.hideModal(); } }, 'Отмена'),
+                E('button', {
+                    'class': 'cbi-button cbi-button-apply',
+                    'click': function() {
+                        var dev = sourceSelect.value;
+                        ui.hideModal();
+                        self.doBackupManual(dev, logPre);
+                    }
+                }, 'Создать бэкап')
+            ]);
+            ui.showModal('Создание бэкапа', [ body, footer ]);
+        }).catch(function(err) {
+            ui.addNotification(null, E('p', {}, 'Ошибка получения источников: ' + err), 'danger');
+        });
+    },
+
+    doBackupManual: function(device, logPre) {
+        var self = this;
         logPre.textContent = ''; self._lockUI(true);
-        callRun('backup_manual', '', '', 'yes').then(function(res) {
+        callRun('backup_manual', device, '', 'yes').then(function(res) {
             if (res && res.error) { ui.addNotification(null, E('p', {}, 'Ошибка: ' + res.error), 'danger'); self._lockUI(false); return; }
             self.startPolling(logPre, 'backup_manual');
         }).catch(function(err) { ui.addNotification(null, E('p', {}, 'Ошибка запуска: ' + err), 'danger'); self._lockUI(false); });
     },
+
+
+
+
+
+
+
+
+
+
+
 
     showUploadDialog: function(logPre) {
         var self = this;
