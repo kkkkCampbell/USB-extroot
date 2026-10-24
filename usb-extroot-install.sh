@@ -774,19 +774,19 @@ return view.extend({
                     hintEl.style.display = 'block'; hintEl.style.color = '#ff5555';
                 }
             } else if (!isExtroot) {
-                // Если используется внутренняя память роутера:
-                // Заблокировать: Восстановить загрузку с внутренней памяти, Создать бэкап сейчас, Восстановить из архива, Загрузить с ПК
+				// Если используется внутренняя память роутера — разрешаем создание бэкапа
                 if (btnTransferEl) btnTransferEl.disabled = !canWrite;
                 if (modeSelectEl) modeSelectEl.disabled = !canWrite;
                 deviceSelect.disabled = !canWrite;
                 if (btnSwitchEl) btnSwitchEl.disabled = !canWrite || switchAvailCount === 0;
                 switchDeviceSelect.disabled = !canWrite || switchAvailCount === 0;
                 
-                if (btnRestoreEl) btnRestoreEl.disabled = true;         // Заблокировано для внутренней памяти
-                if (btnBackupEl) btnBackupEl.disabled = true;           // Заблокировано для внутренней памяти
-                if (btnRestoreArchiveEl) btnRestoreArchiveEl.disabled = true; // Заблокировано для внутренней памяти
-                if (btnUploadEl) btnUploadEl.disabled = true;           // Заблокировано для внутренней памяти
-                
+                // if (btnRestoreEl) btnRestoreEl.disabled = true;         // Заблокировано для внутренней памяти
+                // if (btnBackupEl) btnBackupEl.disabled = true;           // Заблокировано для внутренней памяти
+                // if (btnRestoreArchiveEl) btnRestoreArchiveEl.disabled = true; // Заблокировано для внутренней памяти
+                // if (btnUploadEl) btnUploadEl.disabled = true;           // Заблокировано для внутренней памяти
+                if (btnBackupEl) btnBackupEl.disabled = !canWrite;      // Разблокируем создание бэкапа для внутренней памяти
+				
                 if (hintEl) hintEl.style.display = 'none';
             } else {
                 // Если система загружена с внешнего накопителя - разблокировать всё (при наличии прав записи)
