@@ -1,6 +1,6 @@
 #!/bin/sh
 # ============================================================
-#  usb-extroot.sh  v0.1.41.06-draft
+#  usb-extroot.sh  v0.1.41.07-draft
 #  Перенос overlay OpenWrt на USB-накопитель (extroot)
 #  Лог: /tmp/usb-extroot.log
 #  Бэкап: /tmp/.usb-extroot-x7k2m9q4p1w8/
@@ -8,7 +8,7 @@
 #  sh <( wget -qO- https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft/usb-extroot-install.sh )
 #  sh /usb-extroot-install.sh
 # ============================================================
-ver="v0.1.41.06-draft"
+ver="v0.1.41.07-draft"
 SRC_BASE="https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft"
 TEST_MODE=0
 
@@ -177,6 +177,11 @@ LOG=/tmp/usb-extroot.log
 LOCK_DIR="${USB_EXTROOT_LOCK_DIR:-}"
 
 _cleanup_pid_and_lock() {
+	# rpcd-поллер опрашивает PID_FILE с интервалом 1 с в окне 10 с.
+	# Без этой задержки быстрая операция (например, backup_manual)
+	# успевает записать и удалить PID_FILE между двумя тиками, и в лог
+	# попадает "WARN: PID_FILE not created in 10s", а UI не получает PID.
+	sleep 6
 	rm -f "$PID_FILE"
 	if [ -n "$LOCK_DIR" ] && [ -d "$LOCK_DIR" ]; then
 		rm -rf "$LOCK_DIR"
