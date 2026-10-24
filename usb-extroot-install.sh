@@ -1307,6 +1307,15 @@ if [ -n "$FILE" ]; then
         *) echo "Status: 400 Bad Request"; echo; echo "Only .tar.gz, tmp/ or manual/"; exit 0 ;;
     esac
 
+
+
+
+
+
+
+
+
+
     FOUND=""
     if [ "${FILE#tmp/}" != "$FILE" ]; then
         candidate="/tmp/${FILE#tmp/}"
@@ -1327,14 +1336,48 @@ if [ -n "$FILE" ]; then
         done
     fi
 
+    # Fallback: ручные бэкапы с внутреннего overlay лежат в /tmp
+    if [ -z "$FOUND" ]; then
+        base=$(basename "$FILE")
+        candidate="/tmp/$base"
+        [ -f "$candidate" ] && FOUND="$candidate"
+        if [ -z "$FOUND" ]; then
+            for d in /tmp/.usb-extroot-*/; do
+                [ -d "$d" ] || continue
+                candidate="$d$base"
+                if [ -f "$candidate" ]; then FOUND="$candidate"; break; fi
+                candidate="${d}manual/$base"
+                if [ -f "$candidate" ]; then FOUND="$candidate"; break; fi
+            done
+        fi
+    fi
+
     if [ -z "$FOUND" ]; then echo "Status: 404 Not Found"; echo; echo "Archive not found"; exit 0; fi
+	
+	
+	
+	
+	
+	
+	
+	
     name=$(basename "$FOUND"); size=$(wc -c < "$FOUND")
     echo "Content-Type: application/gzip"; echo "Content-Length: $size"
     echo "Content-Disposition: attachment; filename=\"$name\""; echo "Cache-Control: no-store"; echo
     cat "$FOUND"; exit 0
 fi
 
-latest=$(ls -t /tmp/.usb-extroot-*/overlay_backup_*.tar.gz /tmp/.usb-extroot-*/USER_MANUAL_ARCHIVE_*.tar.gz 2>/dev/null | head -1)
+
+
+
+latest=$(ls -t /tmp/.usb-extroot-*/overlay_backup_*.tar.gz \
+              /tmp/.usb-extroot-*/USER_MANUAL_ARCHIVE_*.tar.gz \
+              /tmp/.usb-extroot-*/manual/USER_MANUAL_ARCHIVE_*.tar.gz 2>/dev/null | head -1)
+
+
+
+
+
 if [ -z "$latest" ] || [ ! -f "$latest" ]; then echo "Status: 404 Not Found"; echo; echo "Not found"; exit 0; fi
 name=$(basename "$latest"); size=$(wc -c < "$latest")
 echo "Content-Type: application/gzip"; echo "Content-Length: $size"
