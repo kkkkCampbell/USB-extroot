@@ -3,7 +3,7 @@
 #  usb-extroot-install.sh  — установщик usb-extroot + веб-морда
 #  sh <( wget -qO- https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft/usb-extroot-install.sh )
 # ============================================================
-TEST_MODE=0
+TEST_MODE=1
 BASE_DIR="/opt/usb-extroot"
 
 die() { echo "ОШИБКА: $1" >&2; exit 1; }
@@ -12,7 +12,6 @@ need_file() { [ -s "$1" ] || die "файл $1 не создан или пуст"
 need_exec() { need_file "$1"; [ -x "$1" ] || die "файл $1 не исполняемый"; }
 need_sh()   { need_file "$1"; sh -n "$1" 2>/dev/null || die "синтаксическая ошибка в $1"; }
 need_link() { [ -L "$1" ] || die "симлинк $1 не создан"; [ -e "$1" ] || die "симлинк $1 висит"; }
-
 
 mkdir -p "$BASE_DIR" || die "не смог создать $BASE_DIR"
 need_dir "$BASE_DIR"
@@ -41,7 +40,6 @@ if [ "$(id -u)" != "0" ]; then
     echo "Запустите от root" >&2
     exit 1
 fi
-
 
 if [ "$TEST_MODE" != "1" ]; then
 	SRC="https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft"
@@ -140,7 +138,7 @@ parent_dev() {
         /dev/mmcblk*p[0-9]*) echo "${d%p[0-9]*}" ;;
         /dev/sd[a-z][0-9]*)  echo "${d%[0-9]*}" ;;
         /dev/nvme*n*p[0-9]*) echo "${d%p[0-9]*}" ;;
-        /dev/vd[a-z][0-9]*)  echo "${d%[0-9]*}" ;;
+        /dev/vd[a-z][0-9]*)  echo "${d%p[0-9]*}" ;;
         *)                   echo "$d" ;;
     esac
 }
@@ -309,7 +307,6 @@ method_devices() {
     printf '] }\n'
 }
 
-# --- Автономное сканирование доступных оверлеев с фильтрацией дублей и исключением текущего загрузочного накопителя ---
 method_switch_targets() {
     local first=1 dev mp size_mb size_gb desc parent_name
     local status_out is_extroot="" cur_dev=""
@@ -320,19 +317,16 @@ method_switch_targets() {
 
     printf '{ "result": ['
     
-    # Если загружены с внешнего накопителя, добавляем в список внутреннюю память (диск восстановления)
     if [ "$is_extroot" = "yes" ]; then
         printf '{"dev":"internal","desc":"Внутренняя память роутера"}'
         first=0
     fi
 
-    # Собираем уникальные устройства, исключая дубликаты монтирования и текущий активный накопитель
     for dev in $(awk '$3=="ext4" || $3=="f2fs" || $3=="btrfs" {print $1}' /proc/mounts 2>/dev/null | awk '!seen[$0]++'); do
         case "$dev" in
             /dev/ubi*|/dev/mtdblock*|/dev/root) continue ;;
         esac
         
-        # Не предлагаем диск, с которого в данный момент загружена система
         [ "$dev" = "$cur_dev" ] && continue
         
         mp=$(awk -v d="$dev" '$1==d {print $2; exit}' /proc/mounts 2>/dev/null)
@@ -588,7 +582,7 @@ mkdir -p /usr/share/luci/menu.d || die "mkdir /usr/share/luci/menu.d"
 ln -sf "$BASE_DIR/menu.json" /usr/share/luci/menu.d/luci-app-usb-extroot.json || die "ln menu"
 need_link /usr/share/luci/menu.d/luci-app-usb-extroot.json
 
-echo "==> Устанавливаю view..."
+echo "==> Устанавливаю view с исправленной логикой блокировок..."
 cat > "$BASE_DIR/main.js" <<'VIEW_EOF'
 'use strict';
 'require view';
@@ -613,7 +607,7 @@ var readToken = '';
 var writeToken = '';
 
 function unwrap(res) { if (res && typeof res === 'object' && 'result' in res) return res.result; return res; }
-function cleanLog(str) { return str.replace(/\r/g, '').replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, ''); }
+function cleanLog(str) { return str.replace(/\r/g, '').replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{1,4})*)?[0-9A-ORZcf-nqry=><]/g, ''); }
 function genConfirmCode() { var n = ''; for (var i = 0; i < 4; i++) n += Math.floor(Math.random() * 10); return n; }
 
 function buildManualDownloadLink(relPath) {
@@ -647,16 +641,16 @@ return view.extend({
             'style': 'background:#111;color:#ccc;padding:10px;height:400px;overflow:auto;font-family:monospace;font-size:12px;white-space:pre-wrap;border:1px solid #444;margin-top:10px;'
         }, '');
 
-        var deviceSelect = E('select', { 'id': 'usb-extroot-device', 'style': 'width:100%;padding:4px;' }, [
+        var deviceSelect = E('select', { 'id': 'usb-extroot-device', 'style': 'width:100%;padding:4px;', 'disabled': true }, [
             E('option', { 'value': '' }, '— нажмите "Получить состояние" —')
         ]);
-        var modeSelect = E('select', { 'id': 'usb-extroot-mode', 'style': 'width:100%;padding:4px;' }, [
+        var modeSelect = E('select', { 'id': 'usb-extroot-mode', 'style': 'width:100%;padding:4px;', 'disabled': true }, [
             E('option', { 'value': '' }, '— ВЫБЕРИТЕ ВАРИАНТ ПЕРЕНОСА ДАННЫХ —'),
             E('option', { 'value': 'format' }, 'С форматированием (mkfs.ext4) ПОЛНОЕ УНИЧТОЖЕНИЕ ДАННЫХ'),
             E('option', { 'value': 'noformat' }, 'Без форматирования (только overlay-структура)')
         ]);
 
-        var switchDeviceSelect = E('select', { 'id': 'usb-extroot-switch-device', 'style': 'width:100%;padding:4px;' }, [
+        var switchDeviceSelect = E('select', { 'id': 'usb-extroot-switch-device', 'style': 'width:100%;padding:4px;', 'disabled': true }, [
             E('option', { 'value': '' }, '— нажмите "Получить состояние" —')
         ]);
 
@@ -665,17 +659,17 @@ return view.extend({
         var hintText = E('div', { 'id': 'usb-extroot-hint', 'style': 'margin-bottom:10px; color:#ffaa00; font-size:12px; display:none;' }, '');
 
         var btnFallback = E('button', {
-            'class': 'cbi-button cbi-button-negative', 'style': 'margin-right:8px; display:none;', 'id': 'btn-fallback_fix',
+            'class': 'cbi-button cbi-button-negative', 'style': 'margin-right:8px; display:none;', 'id': 'btn-fallback_fix', 'disabled': true,
             'click': function() { self.runOp('fallback_fix', null, null, logPre); }
         }, 'Исправить аварийный режим overlay');
 
         var btnTransfer = E('button', {
-            'class': 'cbi-button', 'style': 'margin-right:8px;', 'id': 'btn-transfer',
+            'class': 'cbi-button', 'style': 'margin-right:8px;', 'id': 'btn-transfer', 'disabled': true,
             'click': function() { self.runOp(modeSelect.value, deviceSelect.value, null, logPre); }
         }, 'Выполнить перенос');
 
         var btnSwitchOverlay = E('button', {
-            'class': 'cbi-button cbi-button-apply', 'style': 'margin-right:8px;', 'id': 'btn-switch-overlay',
+            'class': 'cbi-button cbi-button-apply', 'style': 'margin-right:8px;', 'id': 'btn-switch-overlay', 'disabled': true,
             'click': function() {
                 var dev = switchDeviceSelect.value;
                 if (!dev) { ui.addNotification(null, E('p', {}, 'Выберите накопитель для переключения.'), 'danger'); return; }
@@ -687,28 +681,23 @@ return view.extend({
             }
         }, 'Сменить загрузочный накопитель');
 
-        var btnRestore = E('button', {
-            'class': 'cbi-button', 'style': 'margin-right:8px;', 'id': 'btn-restore',
-            'click': function() { self.runOp('restore', null, null, logPre); }
-        }, 'Восстановить загрузку с внутренней памяти');
-
         var btnRestoreArchive = E('button', {
-            'class': 'cbi-button', 'style': 'margin-right:8px;', 'id': 'btn-restore-archive',
+            'class': 'cbi-button', 'style': 'margin-right:8px;', 'id': 'btn-restore-archive', 'disabled': true,
             'click': function() { self.showArchiveList(logPre); }
         }, 'Восстановить из архива на флешке');
 
         var btnBackup = E('button', {
-            'class': 'cbi-button', 'style': 'margin-right:32px;', 'id': 'btn-backup-manual',
+            'class': 'cbi-button', 'style': 'margin-right:32px;', 'id': 'btn-backup-manual', 'disabled': true,
             'click': function() { self.runBackupManual(logPre); }
         }, 'Создать бэкап сейчас');
 
         var btnUpload = E('button', {
-            'class': 'cbi-button', 'style': 'margin-right:8px;', 'id': 'btn-upload-archive',
+            'class': 'cbi-button', 'style': 'margin-right:8px;', 'id': 'btn-upload-archive', 'disabled': true,
             'click': function() { self.showUploadDialog(logPre); }
         }, 'Загрузить архив с ПК');
 
         var btnFactoryReset = E('button', {
-            'class': 'cbi-button cbi-button-negative', 'style': 'margin-top:20px; display:none;', 'id': 'btn-factory-reset',
+            'class': 'cbi-button cbi-button-negative', 'style': 'margin-top:20px; display:none;', 'id': 'btn-factory-reset', 'disabled': true,
             'click': function() { self.runOp('reset_keep_extroot', null, null, logPre); }
         }, 'Сбросить настройки (оставить загрузку с флешки)');
 
@@ -777,7 +766,6 @@ return view.extend({
                 deviceSelect.disabled = true;
                 if (btnSwitchEl) btnSwitchEl.disabled = true;
                 switchDeviceSelect.disabled = true;
-                if (btnRestoreEl) btnRestoreEl.disabled = true;
                 if (btnRestoreArchiveEl) btnRestoreArchiveEl.disabled = true;
                 if (btnBackupEl) btnBackupEl.disabled = true;
                 if (btnUploadEl) btnUploadEl.disabled = true;
@@ -785,13 +773,29 @@ return view.extend({
                     hintEl.textContent = 'ВНИМАНИЕ: Обнаружен аварийный режим overlay (фоллбэк). Сначала нажмите «Исправить аварийный режим overlay».';
                     hintEl.style.display = 'block'; hintEl.style.color = '#ff5555';
                 }
-            } else {
-                if (btnTransferEl) btnTransferEl.disabled = !canWrite || isExtroot;
-                if (modeSelectEl) modeSelectEl.disabled = !canWrite || isExtroot;
-                deviceSelect.disabled = !canWrite || isExtroot;
+            } else if (!isExtroot) {
+                // Если используется внутренняя память роутера:
+                // Заблокировать: Восстановить загрузку с внутренней памяти, Создать бэкап сейчас, Восстановить из архива, Загрузить с ПК
+                if (btnTransferEl) btnTransferEl.disabled = !canWrite;
+                if (modeSelectEl) modeSelectEl.disabled = !canWrite;
+                deviceSelect.disabled = !canWrite;
                 if (btnSwitchEl) btnSwitchEl.disabled = !canWrite || switchAvailCount === 0;
                 switchDeviceSelect.disabled = !canWrite || switchAvailCount === 0;
-                if (btnRestoreEl) btnRestoreEl.disabled = !canWrite;
+                
+                if (btnRestoreEl) btnRestoreEl.disabled = true;         // Заблокировано для внутренней памяти
+                if (btnBackupEl) btnBackupEl.disabled = true;           // Заблокировано для внутренней памяти
+                if (btnRestoreArchiveEl) btnRestoreArchiveEl.disabled = true; // Заблокировано для внутренней памяти
+                if (btnUploadEl) btnUploadEl.disabled = true;           // Заблокировано для внутренней памяти
+                
+                if (hintEl) hintEl.style.display = 'none';
+            } else {
+                // Если система загружена с внешнего накопителя - разблокировать всё (при наличии прав записи)
+                if (btnTransferEl) btnTransferEl.disabled = true; // Перенос с USB на USB не нужен
+                if (modeSelectEl) modeSelectEl.disabled = true;
+                deviceSelect.disabled = true;
+                if (btnSwitchEl) btnSwitchEl.disabled = !canWrite || switchAvailCount === 0;
+                switchDeviceSelect.disabled = !canWrite || switchAvailCount === 0;
+                
                 if (btnRestoreArchiveEl) btnRestoreArchiveEl.disabled = !canWrite;
                 if (btnBackupEl) btnBackupEl.disabled = !canWrite;
                 if (btnUploadEl) btnUploadEl.disabled = !canWrite;
@@ -805,17 +809,23 @@ return view.extend({
 
             var fbBtn = document.getElementById('btn-fallback_fix');
             if (fbBtn) fbBtn.style.display = (isFallback && canWrite) ? 'inline-block' : 'none';
+            if (fbBtn) fbBtn.disabled = !canWrite;
+            
             var getStateBtn = document.getElementById('btn-get-state');
             if (getStateBtn) getStateBtn.disabled = false;
+            
             var resetBtnEl = document.getElementById('btn-factory-reset');
-            if (resetBtnEl) resetBtnEl.style.display = (isExtroot && canWrite) ? 'block' : 'none';
+            if (resetBtnEl) {
+                resetBtnEl.style.display = (isExtroot && canWrite) ? 'block' : 'none';
+                resetBtnEl.disabled = !canWrite;
+            }
         };
 
         self._updateUI = updateUI;
 
         self._lockUI = function(disabled) {
-            ['btn-transfer', 'btn-switch-overlay', 'btn-restore', 'btn-fallback_fix', 'btn-restore-archive',
-             'btn-backup-manual', 'btn-upload-archive', 'btn-get-state'].forEach(function(id) {
+            ['btn-transfer', 'btn-switch-overlay', 'btn-fallback_fix', 'btn-restore-archive',
+             'btn-backup-manual', 'btn-upload-archive', 'btn-get-state', 'btn-factory-reset'].forEach(function(id) {
                 var el = document.getElementById(id);
                 if (el) el.disabled = disabled;
             });
@@ -879,10 +889,7 @@ return view.extend({
 			E('div', { 'style': 'display:flex; flex-wrap:wrap; gap:8px; justify-content:flex-end; margin-top:15px; margin-bottom:15px;' }, [
 				btnSwitchOverlay
 			]),
-            E('div', { 'style': 'border-top:1px dashed rgba(255,255,255,0.2); margin-bottom:15px;' }),
-            E('div', { 'style': 'display:flex; flex-wrap:wrap; gap:8px; margin-bottom:10px;' }, [
-                btnRestore
-            ]),
+
             E('div', { 'style': 'border-top:1px dashed rgba(255,255,255,0.2); margin-bottom:15px;' }),
             E('div', { 'style': 'display:flex; flex-wrap:wrap; gap:8px;' }, [
                 btnBackup, btnRestoreArchive, btnUpload
@@ -1210,10 +1217,13 @@ return view.extend({
                             manualDownloaded = true;
                             var rel = m[1].trim().split('/').pop();
                             if (m[1].indexOf('/manual/') !== -1) rel = 'manual/' + rel;
-                            self.downloadArchive(rel).then(function(ok) {
-                                if (ok) ui.addNotification(null, E('p', {}, 'Бэкап создан, скачиваем...'), 'info');
-                                else ui.addNotification(null, E('p', {}, 'Не удалось скачать бэкап автоматически. ', buildManualDownloadLink(rel)), 'warning');
-                            });
+                            
+                            setTimeout(function() {
+                                self.downloadArchive(rel).then(function(ok) {
+                                    if (ok) ui.addNotification(null, E('p', {}, 'Бэкап создан, скачиваем...'), 'info');
+                                    else ui.addNotification(null, E('p', {}, 'Не удалось скачать бэкап автоматически. ', buildManualDownloadLink(rel)), 'warning');
+                                });
+                            }, 3000);
                         }
                     }
                 }
@@ -1301,6 +1311,13 @@ if [ -n "$FILE" ]; then
     if [ "${FILE#tmp/}" != "$FILE" ]; then
         candidate="/tmp/${FILE#tmp/}"
         [ -f "$candidate" ] && FOUND="$candidate"
+        if [ -z "$FOUND" ]; then
+            for d in /tmp/.usb-extroot-*/; do
+                [ -d "$d" ] || continue
+                candidate="$d${FILE#tmp/}"
+                if [ -f "$candidate" ]; then FOUND="$candidate"; break; fi
+            done
+        fi
     fi
 
     if [ -z "$FOUND" ]; then
@@ -1317,7 +1334,7 @@ if [ -n "$FILE" ]; then
     cat "$FOUND"; exit 0
 fi
 
-latest=$(ls -t /tmp/.usb-extroot-*/overlay_backup_*.tar.gz 2>/dev/null | head -1)
+latest=$(ls -t /tmp/.usb-extroot-*/overlay_backup_*.tar.gz /tmp/.usb-extroot-*/USER_MANUAL_ARCHIVE_*.tar.gz 2>/dev/null | head -1)
 if [ -z "$latest" ] || [ ! -f "$latest" ]; then echo "Status: 404 Not Found"; echo; echo "Not found"; exit 0; fi
 name=$(basename "$latest"); size=$(wc -c < "$latest")
 echo "Content-Type: application/gzip"; echo "Content-Length: $size"
@@ -1503,7 +1520,7 @@ health_check() {
 		elif [ -L "$link" ]; then
 			_hc_fail "$link висит (цель не существует)"
 		else
-			_hc_fail "$link не создан"
+			_hc_fail "$link не создал"
 		fi
 	done
 
