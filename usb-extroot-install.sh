@@ -826,7 +826,7 @@ return view.extend({
                 });
             }
             if (availCount === 0) {
-                deviceSelect.appendChild(E('option', { 'value': '' }, '— нет доступных съёмных накопителей —'));
+                deviceSelect.appendChild(E('option', { 'value': '' }, '— нет доступных накопителей —'));
             }
 
             switchDeviceSelect.innerHTML = '';
@@ -888,9 +888,9 @@ return view.extend({
                 }
             } else if (!isExtroot) {
                 // Внутренняя память: разрешаем бэкап, восстановление из архива и загрузку с ПК
-                if (btnTransferEl) btnTransferEl.disabled = !canWrite;
-                if (modeSelectEl) modeSelectEl.disabled = !canWrite;
-                deviceSelect.disabled = !canWrite;
+                if (btnTransferEl) btnTransferEl.disabled = !canWrite || availCount === 0;
+                if (modeSelectEl) modeSelectEl.disabled = !canWrite || availCount === 0;
+                deviceSelect.disabled = !canWrite || availCount === 0;
                 if (btnSwitchEl) btnSwitchEl.disabled = !canWrite || switchAvailCount === 0 || switchDeviceSelect.value === '';
                 switchDeviceSelect.disabled = !canWrite || switchAvailCount === 0;
 
@@ -900,10 +900,10 @@ return view.extend({
 
                 if (hintEl) hintEl.style.display = 'none';
             } else {
-                // Если система загружена с внешнего накопителя - разблокировать всё (при наличии прав записи)
-                if (btnTransferEl) btnTransferEl.disabled = true; // Перенос с USB на USB не нужен
-                if (modeSelectEl) modeSelectEl.disabled = true;
-                deviceSelect.disabled = true;
+                // Клон-режим (Флешка А -> Флешка Б)
+                if (btnTransferEl) btnTransferEl.disabled = !canWrite || availCount === 0;
+                if (modeSelectEl) modeSelectEl.disabled = !canWrite || availCount === 0;
+                deviceSelect.disabled = !canWrite || availCount === 0;
                 if (btnSwitchEl) btnSwitchEl.disabled = !canWrite || switchAvailCount === 0 || switchDeviceSelect.value === '';
                 switchDeviceSelect.disabled = !canWrite || switchAvailCount === 0;
                 
