@@ -1513,14 +1513,14 @@ return view.extend({
                 'click': function() {
                     callAbortSleep().then(function() {
                         ui.hideModal();
-                        ui.addNotification(null, E('p', {}, 'Сигнал перезагрузки отправлен, роутер перезагружается...'), 'info');
-                        setTimeout(function() { window.location.reload(); }, 5000);
+                        ui.addNotification(null, E('p', {}, 'Сигнал перезагрузки отправлен, роутер перезагружается. Страница обновится автоматически, когда связь восстановится.'), 'info');
+                        // Никаких window.location.reload() — ждем, пока роутер сам не оборвет связь
                     }).catch(function(err) {
                         ui.addNotification(null, E('p', {}, 'Ошибка отправки команды ребута: ' + err), 'danger');
                     });
                 }
             }, '🔄 Перезагрузить роутер сейчас');
-
+			
             var body = E('div', { 'id': 'usb-extroot-download-modal', 'style': 'padding: 10px;' }, [
                 E('p', { 'style': 'font-size:16px; font-weight:bold; color:#ffaa00;' }, '⚠️ Операция успешно завершена!'),
                 E('p', {}, 'Перед тем как роутер уйдет в перезагрузку, убедитесь, что все данные сохранены.'),
