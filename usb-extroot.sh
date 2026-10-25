@@ -1,6 +1,6 @@
 #!/bin/sh
 # ============================================================
-#  usb-extroot.sh  v0.1.42.01-draft
+#  usb-extroot.sh  v0.1.43.00-draft
 #  Перенос overlay OpenWrt на USB-накопитель (extroot)
 #  Лог: /tmp/usb-extroot.log
 #  Бэкап: /tmp/.usb-extroot-x7k2m9q4p1w8/
@@ -8,7 +8,7 @@
 #  sh <( wget -qO- https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft/usb-extroot-install.sh )
 #  sh /usb-extroot-install.sh
 # ============================================================
-ver="v0.1.42.01-draft"
+ver="v0.1.43.00-draft"
 SRC_BASE="https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft"
 TEST_MODE=0
 
@@ -1178,21 +1178,6 @@ if [ "$BATCH" = "1" ] && [ -n "$BATCH_ACTION" ]; then
 			exit 0
 			;;
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 		archive-info)
 			latest=$(ls -t /tmp/.usb-extroot-*/overlay_backup_*.tar.gz 2>/dev/null | head -1)
 			if [ -n "$latest" ] && [ -f "$latest" ]; then
@@ -1203,40 +1188,30 @@ if [ "$BATCH" = "1" ] && [ -n "$BATCH_ACTION" ]; then
 			fi
 			exit 0
 			;;
-
 		archive-list)
-			for f in /tmp/*.tar.gz; do
+			for f in $(ls -t /tmp/*.tar.gz 2>/dev/null); do
 				[ -f "$f" ] || continue
-				size=$(wc -c < "$f" 2>/dev/null || echo 0)
+				size=$(ls -l "$f" 2>/dev/null | awk '{print $5}')
 				echo "tmp/$(basename "$f")|$size"
 			done
 
-			i=1
-			while [ $i -le 3 ]; do
-				found_on_mnt=0
-				for f in $(find /mnt -type f -name "*.tar.gz" 2>/dev/null | grep -E 'usb-extroot-backups|manual'); do
-					[ -f "$f" ] || continue
-					found_on_mnt=1
-					size=$(wc -c < "$f" 2>/dev/null || echo 0)
-					
-					case "$f" in
-						*/manual/*) echo "manual/$(basename "$f")|$size" ;;
-						*)          echo "$(basename "$f")|$size" ;;
-					esac
-				done
-				
-				[ "$found_on_mnt" = "1" ] && break
-				
-				sleep 1
-				i=$((i + 1))
+			for f in $(ls -t $(find /tmp/.usb-extroot-* /overlay/usb-extroot-backups /mnt/*/usb-extroot-backups -type f -name "*.tar.gz" 2>/dev/null) 2>/dev/null); do
+				[ -f "$f" ] || continue
+				size=$(ls -l "$f" 2>/dev/null | awk '{print $5}')
+				case "$f" in
+					*/manual/*) echo "manual/$(basename "$f")|$size" ;;
+					*)          echo "$(basename "$f")|$size" ;;
+				esac
 			done
 			exit 0
 			;;
 	esac
 fi
 
+
 EXTROOT_ACTIVE=0
 EXTROOT_DEV=""
+
 if extroot_active; then
 	EXTROOT_ACTIVE=1
 	EXTROOT_DEV=$(quick_overlay_dev)
