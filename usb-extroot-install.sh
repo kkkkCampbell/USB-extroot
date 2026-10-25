@@ -1650,21 +1650,22 @@ if [ -n "$FILE" ]; then
 
     if [ -z "$FOUND" ]; then echo "Status: 404 Not Found"; echo; echo "Archive not found"; exit 0; fi
 
-    name=$(basename "$FOUND"); size=$(wc -c < "$FOUND")
+    name=$(basename "$FOUND"); size=$(ls -l "$FOUND" | awk '{print $5}'); size=${size:-0}
     echo "Content-Type: application/gzip"; echo "Content-Length: $size"
     echo "Content-Disposition: attachment; filename=\"$name\""; echo "Cache-Control: no-store"; echo
-    cat "$FOUND"; exit 0
+    dd if="$FOUND" bs=65536 2>/dev/null; exit 0
 fi
 
-latest=$(ls -t /tmp/.usb-extroot-*/overlay_backup_*.tar.gz \
-              /tmp/.usb-extroot-*/USER_MANUAL_ARCHIVE_*.tar.gz \
-              /tmp/.usb-extroot-*/manual/USER_MANUAL_ARCHIVE_*.tar.gz 2>/dev/null | head -1)
-
+latest=$(ls -t /tmp/.usb-extroot-*/*.tar.gz \
+              /tmp/.usb-extroot-*/manual/*.tar.gz \
+              /tmp/.usb-extroot-*/auto/*.tar.gz 2>/dev/null | head -1)
+			  
 if [ -z "$latest" ] || [ ! -f "$latest" ]; then echo "Status: 404 Not Found"; echo; echo "Not found"; exit 0; fi
-name=$(basename "$latest"); size=$(wc -c < "$latest")
+
+name=$(basename "$latest"); size=$(ls -l "$latest" | awk '{print $5}'); size=${size:-0}
 echo "Content-Type: application/gzip"; echo "Content-Length: $size"
 echo "Content-Disposition: attachment; filename=\"$name\""; echo "Cache-Control: no-store"; echo
-cat "$latest"
+dd if="$latest" bs=65536 2>/dev/null
 CGI_EOF
 
 need_sh "$BASE_DIR/archive.cgi"
