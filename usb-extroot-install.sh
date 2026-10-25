@@ -38,7 +38,7 @@ service_running() {
 
 # wait_for_service NAME TIMEOUT_SEC — только целые секунды
 wait_for_service() {
-	local svc="$1" timeout="${2:-10}" i=0
+	local svc="$1" timeout=40 i=0
 	while [ "$i" -lt "$timeout" ]; do
 		if service_running "$svc"; then
 			return 0
@@ -188,7 +188,7 @@ run_script_action() {
     if [ ! -x "$SCRIPT" ]; then echo "NOT_FOUND"; return 1; fi
 
     if command -v timeout >/dev/null 2>&1; then
-        out=$(timeout -s KILL 10 "$SCRIPT" --batch --action="$action" 2>&1)
+        out=$(timeout -s KILL 30 "$SCRIPT" --batch --action="$action" 2>&1)
         rc=$?
         if [ $rc -eq 124 ] || [ $rc -eq 137 ]; then echo "TIMEOUT"; return 124; fi
     else
@@ -197,7 +197,7 @@ run_script_action() {
         "$SCRIPT" --batch --action="$action" >"$tmp" 2>&1 &
         p=$!
         i=0
-        while [ "$i" -lt 10 ]; do
+        while [ "$i" -lt 35 ]; do
             if [ ! -r "/proc/$p/stat" ]; then
                 break
             fi
@@ -233,12 +233,12 @@ method_version() {
     local v="" tmp="/tmp/usb-extroot.ver.$$" p i state
     if [ -x "$SCRIPT" ]; then
         if command -v timeout >/dev/null 2>&1; then
-            timeout -s KILL 10 "$SCRIPT" --version >"$tmp" 2>/dev/null
+            timeout -s KILL 30 "$SCRIPT" --version >"$tmp" 2>/dev/null
         else
             "$SCRIPT" --version >"$tmp" 2>/dev/null &
             p=$!
             i=0
-            while [ "$i" -lt 10 ]; do
+            while [ "$i" -lt 35 ]; do
                 if [ ! -r "/proc/$p/stat" ]; then
                     break
                 fi
@@ -424,13 +424,19 @@ method_archive_list() {
     elif [ "${out#SCRIPT_ERROR}" != "$out" ]; then
         printf '{ "error": %s }\n' "$(printf '%s' "$out" | esc_json)"; return
     fi
+
+
+
     printf '{ "result": ['
     printf '%s\n' "$out" | awk -F'|' '
-        NF>=2 { if (cnt++) printf ","; name=$1; size=$2;
+        NF>=2 { if (seen[$1]++) next;
+                if (cnt++) printf ","; name=$1; size=$2;
                 gsub(/\\/, "\\\\", name); gsub(/"/, "\\\"", name);
                 printf "{\"name\":\"%s\",\"size\":%s}", name, size }
     '
     printf '] }\n'
+
+
 }
 
 method_run() {
@@ -1227,10 +1233,14 @@ return view.extend({
             var archiveSelect = E('select', { 'style': 'width:100%;padding:4px;margin-bottom:10px;' }, [
                 E('option', { 'value': '' }, '— выберите архив —')
             ]);
+
+
             list.forEach(function(a) {
                 var sizeKb = Math.round(a.size / 1024);
                 archiveSelect.appendChild(E('option', { 'value': a.name }, a.name + ' (' + sizeKb + ' KB)'));
             });
+
+
 
             var deviceSelect2 = E('select', { 'style': 'width:100%;padding:4px;margin-bottom:10px;' }, [
                 E('option', { 'value': '' }, '— выберите цель —')
@@ -1243,7 +1253,7 @@ return view.extend({
 
             var body = E('div', {}, [
                 E('p', { 'style': 'color:#ff5555;font-weight:bold;' }, 'ВНИМАНИЕ: архив будет развёрнут на выбранную цель (внешний накопитель или внутренняя память /overlay).'),
-                E('p', {}, 'Архив:'), archiveSelect,
+                E('p', {}, 'Архив (новые вверху):'), archiveSelect,
                 E('p', {}, 'Целевое устройство:'), deviceSelect2
             ]);
 
