@@ -734,9 +734,20 @@ return view.extend({
             E('option', { 'value': 'noformat' }, 'Без форматирования (только overlay-структура)')
         ]);
 
-        var switchDeviceSelect = E('select', { 'id': 'usb-extroot-switch-device', 'style': 'width:100%;padding:4px;', 'disabled': true }, [
+
+
+        var switchDeviceSelect = E('select', { 'id': 'usb-extroot-switch-device', 'style': 'width:100%;padding:4px;', 'disabled': true,
+            'change': function() {
+                var btnSwitchEl = document.getElementById('btn-switch-overlay');
+                if (btnSwitchEl) {
+                    btnSwitchEl.disabled = !canWrite || !switchDeviceSelect.value;
+                }
+            }
+        }, [
             E('option', { 'value': '' }, '— нажмите "Получить состояние" —')
         ]);
+		
+		
 
         var statusText = E('div', { 'style': 'margin-bottom:2px;color:#aaa; font-weight:bold;' }, 'Статус не проверен.');
         var subStatusText = E('div', { 'style': 'margin-bottom:6px; font-size:13px; font-weight:bold; display:none;' }, '');
@@ -826,7 +837,10 @@ return view.extend({
                     switchAvailCount++;
                 });
             }
-            if (switchAvailCount === 0) {
+            if (switchAvailCount > 0) {
+                switchDeviceSelect.insertBefore(E('option', { 'value': '' }, '— выберите накопитель —'), switchDeviceSelect.firstChild);
+                switchDeviceSelect.value = ''; // Сбрасываем выбор на "Не выбрано" при обновлении
+            } else {
                 switchDeviceSelect.appendChild(E('option', { 'value': '' }, '— нет накопителей с валидным оверлеем —'));
             }
 
@@ -877,7 +891,7 @@ return view.extend({
                 if (btnTransferEl) btnTransferEl.disabled = !canWrite;
                 if (modeSelectEl) modeSelectEl.disabled = !canWrite;
                 deviceSelect.disabled = !canWrite;
-                if (btnSwitchEl) btnSwitchEl.disabled = !canWrite || switchAvailCount === 0;
+                if (btnSwitchEl) btnSwitchEl.disabled = !canWrite || switchAvailCount === 0 || switchDeviceSelect.value === '';
                 switchDeviceSelect.disabled = !canWrite || switchAvailCount === 0;
 
                 if (btnBackupEl) btnBackupEl.disabled = !canWrite;
@@ -890,7 +904,7 @@ return view.extend({
                 if (btnTransferEl) btnTransferEl.disabled = true; // Перенос с USB на USB не нужен
                 if (modeSelectEl) modeSelectEl.disabled = true;
                 deviceSelect.disabled = true;
-                if (btnSwitchEl) btnSwitchEl.disabled = !canWrite || switchAvailCount === 0;
+                if (btnSwitchEl) btnSwitchEl.disabled = !canWrite || switchAvailCount === 0 || switchDeviceSelect.value === '';
                 switchDeviceSelect.disabled = !canWrite || switchAvailCount === 0;
                 
                 if (btnRestoreArchiveEl) btnRestoreArchiveEl.disabled = !canWrite;
