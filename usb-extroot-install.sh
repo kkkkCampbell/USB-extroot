@@ -321,12 +321,15 @@ method_devices() {
 }
 
 method_switch_targets() {
-    local first=1 dev mp size_mb size_gb desc parent_name
+    local first=1 dev mp desc devices_out=""
     local status_out is_extroot="" cur_dev=""
     
     status_out=$(run_script_action status)
     is_extroot=$(printf '%s' "$status_out" | awk -F= '$1=="extroot" {print $2}')
     cur_dev=$(printf '%s' "$status_out" | awk -F= '$1=="extroot_dev" {print $2}')
+    
+    # Получаем человекочитаемые имена (с вендором и моделью) через тот же метод
+    devices_out=$(run_script_action devices)
 
     printf '{ "result": ['
     
@@ -346,17 +349,21 @@ method_switch_targets() {
         [ -n "$mp" ] || continue
         
         if [ -d "$mp/upper/etc/config" ] || [ -d "$mp/etc/config" ]; then
-            size_mb=$(df -m "$mp" 2>/dev/null | awk 'NR==2 {print $2}')
-            parent_name=$(basename "$(parent_dev "$dev")")
+            # Берем красивое имя из results action=devices
+            desc=$(printf '%s\n' "$devices_out" | awk -F'|' -v d="$dev" '$1==d {print $3; exit}')
             
-            if [ -n "$size_mb" ] && [ "$size_mb" -gt 1024 ]; then
-                size_gb=$(awk "BEGIN {printf \"%.1f\", $size_mb/1024}")
-                size_str="${size_gb} ГБ"
-            else
-                size_str="${size_mb:-?} МБ"
+            # Если вдруг не нашли (fallback)
+            if [ -z "$desc" ]; then
+                size_mb=$(df -m "$mp" 2>/dev/null | awk 'NR==2 {print $2}')
+                parent_name=$(basename "$(parent_dev "$dev")")
+                if [ -n "$size_mb" ] && [ "$size_mb" -gt 1024 ]; then
+                    size_gb=$(awk "BEGIN {printf \"%.1f\", $size_mb/1024}")
+                    size_str="${size_gb} ГБ"
+                else
+                    size_str="${size_mb:-?} МБ"
+                fi
+                desc="Раздел $dev ($size_str, диск $parent_name)"
             fi
-            
-            desc="Раздел $dev ($size_str, диск $parent_name)"
             
             if [ "$first" = "1" ]; then
                 first=0
@@ -372,6 +379,7 @@ method_switch_targets() {
     
     printf '] }\n'
 }
+
 
 method_log() {
     local chunk=""
