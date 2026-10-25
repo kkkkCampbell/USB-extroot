@@ -257,6 +257,41 @@ PKG_REPAIR_SVC_STOPPED=0
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
+get_backup_name() {
+	local ts=$(date +%Y-%m-%d_%H.%M)
+	local hostname=$(cat /proc/sys/kernel/hostname 2>/dev/null | tr -d '\r\n')
+	[ -z "$hostname" ] && hostname=$(uname -n)
+	
+	# Хостнейм в нижний регистр, разрешаем буквы, цифры и дефис с подчерком
+	hostname=$(echo "$hostname" | tr -c 'a-zA-Z0-9_.-' '_' | tr 'A-Z' 'a-z' | sed 's/_$//')
+
+	local os_id="OpenWrt"
+	local os_rel=""
+	local os_rev=""
+
+	if [ -f /etc/openwrt_release ]; then
+		. /etc/openwrt_release
+		os_id="${DISTRIB_ID:-$os_id}"
+		os_rel="${DISTRIB_RELEASE:-}"
+		os_rev="${DISTRIB_REVISION:-}"
+	fi
+
+	[ -z "$os_rel" ] && os_rel="$(uname -r)"
+	# Обрезаем субверсию (хэш) по первому дефису: r33051-f5dae5ece4 -> r33051
+	os_rev="${os_rev%%-*}"
+
+	# Название бренда (RouteRich) оставляем как есть, только чистим спецсимволы
+	os_id=$(echo "$os_id" | tr -c 'a-zA-Z0-9_.-' '_' | sed 's/_$//')
+	os_rel=$(echo "$os_rel" | tr -c 'a-zA-Z0-9_.-' '_' | sed 's/_$//')
+	os_rev=$(echo "$os_rev" | tr -c 'a-zA-Z0-9_.-' '_' | sed 's/_$//')
+
+	local distro_part="${os_id}"
+	[ -n "$os_rel" ] && distro_part="${distro_part}-${os_rel}"
+	[ -n "$os_rev" ] && distro_part="${distro_part}-${os_rev}"
+
+	echo "${hostname}_${distro_part}_${ts}.tar.gz"
+}
+
 # ------------------------------------------------------------
 #  Универсальный пакетный менеджер
 # ------------------------------------------------------------
@@ -1179,7 +1214,7 @@ if [ "$BATCH" = "1" ] && [ -n "$BATCH_ACTION" ]; then
 			;;
 
 		archive-info)
-			latest=$(ls -t /tmp/.usb-extroot-*/overlay_backup_*.tar.gz 2>/dev/null | head -1)
+			latest=$(ls -t /tmp/.usb-extroot-*/*.tar.gz /tmp/.usb-extroot-*/manual/*.tar.gz /tmp/.usb-extroot-*/auto/*.tar.gz 2>/dev/null | head -1)
 			if [ -n "$latest" ] && [ -f "$latest" ]; then
 				echo "exists=yes"
 				echo "size=$(wc -c < "$latest" 2>/dev/null || echo 0)"
@@ -1192,12 +1227,14 @@ if [ "$BATCH" = "1" ] && [ -n "$BATCH_ACTION" ]; then
 			for f in $(ls -t /tmp/*.tar.gz 2>/dev/null); do
 				[ -f "$f" ] || continue
 				size=$(ls -l "$f" 2>/dev/null | awk '{print $5}')
+				size=${size:-0}
 				echo "tmp/$(basename "$f")|$size"
 			done
 
 			for f in $(ls -t $(find /tmp/.usb-extroot-* /overlay/usb-extroot-backups /mnt/*/usb-extroot-backups -type f -name "*.tar.gz" 2>/dev/null) 2>/dev/null); do
 				[ -f "$f" ] || continue
 				size=$(ls -l "$f" 2>/dev/null | awk '{print $5}')
+				size=${size:-0}
 				case "$f" in
 					*/manual/*) echo "manual/$(basename "$f")|$size" ;;
 					*)          echo "$(basename "$f")|$size" ;;
@@ -1565,7 +1602,7 @@ fi
 if [ "$MODE" = "backup" ] || [ "$MODE" = "backup_manual" ]; then
 	if [ "$MODE" = "backup_manual" ]; then
 		BK_TYPE="manual"
-		BK_PREFIX="USER_MANUAL_ARCHIVE"
+		BK_PREFIX="manual-backup-full_"
 		BK_ROTATE=50
 		BK_SUBDIR="manual"
 		if ! tar_is_full; then
@@ -1575,7 +1612,7 @@ if [ "$MODE" = "backup" ] || [ "$MODE" = "backup_manual" ]; then
 		fi
 	else
 		BK_TYPE="auto"
-		BK_PREFIX="autobackup"
+		BK_PREFIX="auto-backup-full-"
 		BK_ROTATE=30
 		BK_SUBDIR=""
 	fi
@@ -1711,8 +1748,7 @@ if [ "$MODE" = "backup" ] || [ "$MODE" = "backup_manual" ]; then
 	[ -d "$BK_DIR" ] && \
 		find "$BK_DIR" -name '*.part' -mtime +1 -delete 2>/dev/null || true
 
-	BK_TS=$(date +%Y-%m-%d_%H-%M-%S)
-	BK_FILE="$BK_DIR/${BK_PREFIX}_${BK_TS}.tar.gz"
+	BK_FILE="$BK_DIR/${BK_PREFIX}$(get_backup_name)"
 	BK_PART_FILE="${BK_FILE}.part"
 
 	echo "      тип: $BK_TYPE"
@@ -1721,8 +1757,17 @@ if [ "$MODE" = "backup" ] || [ "$MODE" = "backup_manual" ]; then
 	echo "      создаю $BK_FILE ..."
 
 	if ! tar -C / -czf "$BK_PART_FILE" --exclude=overlay/upper/tmp overlay/upper 2>/tmp/usb-extroot-bk.err; then
-		echo "      tar errors:"
-		head -20 /tmp/usb-extroot-bk.err
+		rc=$?
+		echo "      tar errors (exit code: $rc):"
+		if [ -s /tmp/usb-extroot-bk.err ]; then
+			head -20 /tmp/usb-extroot-bk.err
+		else
+			if [ "$rc" -eq 137 ] || [ "$rc" -eq 143 ]; then
+				echo "        [OOM] Процесс убит OOM-killer'ом из-за нехватки ОЗУ."
+			else
+				echo "        [ENOSPC/ERR] stderr пуст. Вероятно, закончилось место в /tmp."
+			fi
+		fi
 		rm -f "$BK_PART_FILE"
 		if [ "$BK_TYPE" = "manual" ]; then
 			die "$CHOICE_TEXT" "Не удалось создать архив."
@@ -1918,8 +1963,17 @@ if [ "$MODE" = "restore_archive" ]; then
 
 	echo "      распаковываю архив в $RESTORE_TARGET ..."
 	if ! tar -xzf "$ARCHIVE_PATH" -C "$RESTORE_TARGET" 2>/tmp/tar_restore.err; then
-		echo "      tar errors:"
-		head -20 /tmp/tar_restore.err
+		rc=$?
+		echo "      tar errors (exit code: $rc):"
+		if [ -s /tmp/tar_restore.err ]; then
+			head -20 /tmp/tar_restore.err
+		else
+			if [ "$rc" -eq 137 ] || [ "$rc" -eq 143 ]; then
+				echo "        [OOM] Процесс убит OOM-killer'ом из-за нехватки ОЗУ."
+			else
+				echo "        [ENOSPC/ERR] stderr пуст. Вероятно, закончилось место."
+			fi
+		fi
 		die "$CHOICE_TEXT" "Не удалось распаковать архив.
 	Цель: $RESTORE_PART ($RESTORE_TARGET)
 	архив: $ARCHIVE_PATH"
@@ -2835,8 +2889,7 @@ BACKUP_DIR=/tmp/.usb-extroot-x7k2m9q4p1w8
 echo "$STAGE8 в $BACKUP_DIR ..."
 
 mkdir -p "$BACKUP_DIR"
-TS=$(date +%Y-%m-%d_%H-%M-%S)
-BACKUP_ARCHIVE="$BACKUP_DIR/overlay_backup_${TS}.tar.gz"
+	BACKUP_ARCHIVE="$BACKUP_DIR/backup-full-$(get_backup_name)"
 
 echo "      удаляю whiteouts из staging..."
 find "$STAGE_DIR/overlay/upper" -name '.wh.*' -delete 2>/dev/null || true
@@ -2866,10 +2919,12 @@ if cp "$BACKUP_ARCHIVE" "$MNT/usb-extroot-backups/" 2>/dev/null; then
     ARCH_NAME=$(basename "$BACKUP_ARCHIVE")
     echo -e "${CLR_GREEN}      архив сохранён на USB: /usb-extroot-backups/$ARCH_NAME${CLR_RESET}"
 
+    rotate_backups "$MNT/usb-extroot-backups" 30 "backup-full-*.tar.gz"
+    rotate_backups "$MNT/usb-extroot-backups" 30 "auto-backup-full-*.tar.gz"
     rotate_backups "$MNT/usb-extroot-backups" 30 "overlay_backup_*.tar.gz"
-    rotate_backups "$MNT/usb-extroot-backups" 30 "autobackup_*.tar.gz"
     
-    TOTAL_AFTER=$(ls -1 "$MNT/usb-extroot-backups"/overlay_backup_*.tar.gz "$MNT/usb-extroot-backups"/autobackup_*.tar.gz 2>/dev/null | wc -l)
+    TOTAL_AFTER=$(ls -1 "$MNT/usb-extroot-backups"/backup-full-*.tar.gz "$MNT/usb-extroot-backups"/auto-backup-full-*.tar.gz "$MNT/usb-extroot-backups"/overlay_backup_*.tar.gz 2>/dev/null | wc -l)
+	
     echo -e "${CLR_GREEN}      на USB сейчас архивов: $TOTAL_AFTER${CLR_RESET}"
 else
     echo -e "${CLR_ORANGE}      не смог скопировать архив на USB${CLR_RESET}"
