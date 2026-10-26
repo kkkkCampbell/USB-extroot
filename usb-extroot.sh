@@ -1,6 +1,6 @@
 #!/bin/sh
 # ============================================================
-#  usb-extroot.sh  v0.1.43.01-draft
+#  usb-extroot.sh  v0.1.43.10-draft
 #  Перенос overlay OpenWrt на USB-накопитель (extroot)
 #  Лог: /tmp/usb-extroot.log
 #  Бэкап: /tmp/.usb-extroot-x7k2m9q4p1w8/
@@ -8,7 +8,7 @@
 #  sh <( wget -qO- https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft/usb-extroot-install.sh )
 #  sh /usb-extroot-install.sh
 # ============================================================
-ver="v0.1.43.01-draft"
+ver="v0.1.43.10-draft"
 SRC_BASE="https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft"
 TEST_MODE=0
 
@@ -531,6 +531,14 @@ confirm_reboot_or_die() {
 
 	if [ "$BATCH" = "1" ]; then
 		[ "$need_share_down" = "1" ] && share_down
+
+		echo -e "${CLR_ORANGE}############################################################${CLR_RESET}"
+		echo 
+		echo "    Перезагружаюсь..."
+		echo -e "${CLR_ORANGE}    При перезагрузке  возможно зависание роутера!"
+		echo -e "    Перезапустите роутер отключив и подав питание.${CLR_RESET}"
+		echo
+		echo -e "${CLR_ORANGE}############################################################${CLR_RESET}"
 		sync
 		sleep 2
 		soft_reboot_with_fallback 40
@@ -1678,20 +1686,47 @@ if [ "$MODE" = "backup" ] || [ "$MODE" = "backup_manual" ]; then
 		fi
 	fi
 
+
+
+
+
+
+
+
+
+
+
 	BK_MNT=$(awk -v p="$BK_OVERLAY_DEV" '$1==p {print $2; exit}' /proc/mounts)
+	BK_NEED_UMOUNT=0
 
-
-
-
+	# Если нужный overlay не смонтирован (типично: internal при активном extroot) —
+	# временно монтируем его, чтобы снять снапшот.
 	if [ -z "$BK_MNT" ] || [ ! -d "$BK_MNT" ]; then
-		if [ "$BK_TYPE" = "manual" ]; then
-			die "$CHOICE_TEXT" "Не нашёл точку монтирования $BK_OVERLAY_DEV."
+		if [ "$BK_TYPE" != "manual" ]; then
+			echo "backup: нет точки монтирования для $BK_OVERLAY_DEV, пропуск"
+			exit 0
 		fi
-		echo "backup: нет точки монтирования для $BK_OVERLAY_DEV, пропуск"
-		exit 0
+		BK_MNT="/tmp/.usb-extroot-bk-mnt.$$"
+		mkdir -p "$BK_MNT" || die "$CHOICE_TEXT" "Не смог создать $BK_MNT"
+		if is_internal_dev "$BK_OVERLAY_DEV"; then
+			if ! mount -t ubifs "$BK_OVERLAY_DEV" "$BK_MNT" 2>/dev/null && \
+			   ! mount "$BK_OVERLAY_DEV" "$BK_MNT" 2>/dev/null; then
+				rmdir "$BK_MNT" 2>/dev/null || true
+				die "$CHOICE_TEXT" "Не смог смонтировать внутренний overlay $BK_OVERLAY_DEV."
+			fi
+		else
+			if ! mount "$BK_OVERLAY_DEV" "$BK_MNT" 2>/dev/null; then
+				rmdir "$BK_MNT" 2>/dev/null || true
+				die "$CHOICE_TEXT" "Не смог смонтировать $BK_OVERLAY_DEV."
+			fi
+		fi
+		BK_NEED_UMOUNT=1
+		echo "      временно смонтирован $BK_OVERLAY_DEV -> $BK_MNT"
 	fi
 
 	if [ ! -d "$BK_MNT/upper" ]; then
+		[ "$BK_NEED_UMOUNT" = "1" ] && umount "$BK_MNT" 2>/dev/null
+		[ "$BK_NEED_UMOUNT" = "1" ] && rmdir "$BK_MNT" 2>/dev/null || true
 		if [ "$BK_TYPE" = "manual" ]; then
 			die "$CHOICE_TEXT" "Нет $BK_MNT/upper."
 		fi
@@ -1699,8 +1734,10 @@ if [ "$MODE" = "backup" ] || [ "$MODE" = "backup_manual" ]; then
 		exit 0
 	fi
 
-	if [ "$BK_IS_INTERNAL" = "1" ]; then
-		# Архив для внутреннего overlay — в /tmp, а не в /overlay/upper/...
+	# Архив для internal или для временно смонтированного — в /tmp,
+	# чтобы не писать бэкап внутрь самого бэкапируемого upper.
+	CUR_ACTIVE_DEV=$(quick_overlay_dev)
+	if [ "$BK_IS_INTERNAL" = "1" ] || [ "$BK_NEED_UMOUNT" = "1" ] || [ "$BK_OVERLAY_DEV" != "$CUR_ACTIVE_DEV" ]; then
 		BK_DIR="/tmp/.usb-extroot-x7k2m9q4p1w8"
 		[ -n "$BK_SUBDIR" ] && BK_DIR="$BK_DIR/$BK_SUBDIR"
 		BK_DST_FS="/tmp"
@@ -1711,6 +1748,8 @@ if [ "$MODE" = "backup" ] || [ "$MODE" = "backup_manual" ]; then
 	fi
 
 	if ! mkdir -p "$BK_DIR" 2>/dev/null; then
+		[ "$BK_NEED_UMOUNT" = "1" ] && umount "$BK_MNT" 2>/dev/null
+		[ "$BK_NEED_UMOUNT" = "1" ] && rmdir "$BK_MNT" 2>/dev/null || true
 		if [ "$BK_TYPE" = "manual" ]; then
 			die "$CHOICE_TEXT" "Не смог создать $BK_DIR."
 		fi
@@ -1722,6 +1761,8 @@ if [ "$MODE" = "backup" ] || [ "$MODE" = "backup_manual" ]; then
 	BK_AVAIL_KB=$(df -k "$BK_DST_FS" 2>/dev/null | awk 'NR==2 {print $4}')
 
 	if [ -z "$BK_UPPER_KB" ] || [ -z "$BK_AVAIL_KB" ]; then
+		[ "$BK_NEED_UMOUNT" = "1" ] && umount "$BK_MNT" 2>/dev/null
+		[ "$BK_NEED_UMOUNT" = "1" ] && rmdir "$BK_MNT" 2>/dev/null || true
 		if [ "$BK_TYPE" = "manual" ]; then
 			die "$CHOICE_TEXT" "Не смог определить размер upper или свободное место."
 		fi
@@ -1729,11 +1770,10 @@ if [ "$MODE" = "backup" ] || [ "$MODE" = "backup_manual" ]; then
 		exit 0
 	fi
 
-
-
-
 	# Для внешних дисков оставляем запас 2x. Для ОЗУ (tmpfs) не проверяем — пусть tar сам падает, если не влезет.
-	if [ "$BK_IS_INTERNAL" != "1" ] && [ "$BK_AVAIL_KB" -lt $((BK_UPPER_KB * 2)) ]; then
+	if [ "$BK_DST_FS" != "/tmp" ] && [ "$BK_AVAIL_KB" -lt $((BK_UPPER_KB * 2)) ]; then
+		[ "$BK_NEED_UMOUNT" = "1" ] && umount "$BK_MNT" 2>/dev/null
+		[ "$BK_NEED_UMOUNT" = "1" ] && rmdir "$BK_MNT" 2>/dev/null || true
 		if [ "$BK_TYPE" = "manual" ]; then
 			die "$CHOICE_TEXT" "Мало места: upper=${BK_UPPER_KB}K, свободно=${BK_AVAIL_KB}K.
 Нужно минимум $((BK_UPPER_KB * 2))K."
@@ -1741,9 +1781,6 @@ if [ "$MODE" = "backup" ] || [ "$MODE" = "backup_manual" ]; then
 		echo "backup: мало места (upper=${BK_UPPER_KB}K avail=${BK_AVAIL_KB}K), пропуск"
 		exit 0
 	fi
-
-
-
 
 	[ -d "$BK_DIR" ] && \
 		find "$BK_DIR" -name '*.part' -mtime +1 -delete 2>/dev/null || true
@@ -1756,7 +1793,34 @@ if [ "$MODE" = "backup" ] || [ "$MODE" = "backup_manual" ]; then
 	echo "      upper: ${BK_UPPER_KB}K, свободно: ${BK_AVAIL_KB}K"
 	echo "      создаю $BK_FILE ..."
 
-	if ! tar -C / -czf "$BK_PART_FILE" --exclude=overlay/upper/tmp overlay/upper 2>/tmp/usb-extroot-bk.err; then
+	# Всегда архивируем ИМЕННО $BK_MNT/upper с префиксом overlay/upper/,
+	# чтобы restore_archive мог развернуть архив.
+	# Активный overlay: $BK_MNT обычно /overlay → tar -C / overlay/upper.
+	# Неактивный / временно смонтированный: tar из $BK_MNT с transform.
+	TAR_OK=0
+	if [ "$BK_OVERLAY_DEV" = "$CUR_ACTIVE_DEV" ] && [ "$BK_MNT" = "$(get_current_overlay)" ]; then
+		if tar -C / -czf "$BK_PART_FILE" --exclude=overlay/upper/tmp overlay/upper 2>/tmp/usb-extroot-bk.err; then
+			TAR_OK=1
+		fi
+	else
+		# GNU tar (для manual уже пытаемся поставить) поддерживает --transform
+		if tar -C "$BK_MNT" --transform='s|^upper|overlay/upper|' -czf "$BK_PART_FILE" --exclude='upper/tmp' upper 2>/tmp/usb-extroot-bk.err; then
+			TAR_OK=1
+		else
+			# fallback без --transform: через временный stage со symlink
+			STAGE_TMP=$(mktemp -d /tmp/.usb-extroot-bkstage.XXXXXX 2>/dev/null) || STAGE_TMP=""
+			if [ -n "$STAGE_TMP" ]; then
+				mkdir -p "$STAGE_TMP/overlay"
+				if ln -s "$BK_MNT/upper" "$STAGE_TMP/overlay/upper" 2>/dev/null && \
+				   tar -C "$STAGE_TMP" -czhf "$BK_PART_FILE" --exclude='overlay/upper/tmp' overlay 2>/tmp/usb-extroot-bk.err; then
+					TAR_OK=1
+				fi
+				rm -rf "$STAGE_TMP"
+			fi
+		fi
+	fi
+
+	if [ "$TAR_OK" != "1" ]; then
 		rc=$?
 		echo "      tar errors (exit code: $rc):"
 		if [ -s /tmp/usb-extroot-bk.err ]; then
@@ -1769,6 +1833,8 @@ if [ "$MODE" = "backup" ] || [ "$MODE" = "backup_manual" ]; then
 			fi
 		fi
 		rm -f "$BK_PART_FILE"
+		[ "$BK_NEED_UMOUNT" = "1" ] && umount "$BK_MNT" 2>/dev/null
+		[ "$BK_NEED_UMOUNT" = "1" ] && rmdir "$BK_MNT" 2>/dev/null || true
 		if [ "$BK_TYPE" = "manual" ]; then
 			die "$CHOICE_TEXT" "Не удалось создать архив."
 		fi
@@ -1778,6 +1844,8 @@ if [ "$MODE" = "backup" ] || [ "$MODE" = "backup_manual" ]; then
 
 	if ! tar -tzf "$BK_PART_FILE" >/dev/null 2>&1; then
 		rm -f "$BK_PART_FILE"
+		[ "$BK_NEED_UMOUNT" = "1" ] && umount "$BK_MNT" 2>/dev/null
+		[ "$BK_NEED_UMOUNT" = "1" ] && rmdir "$BK_MNT" 2>/dev/null || true
 		if [ "$BK_TYPE" = "manual" ]; then
 			die "$CHOICE_TEXT" "Архив повреждён."
 		fi
@@ -1787,6 +1855,12 @@ if [ "$MODE" = "backup" ] || [ "$MODE" = "backup_manual" ]; then
 
 	mv "$BK_PART_FILE" "$BK_FILE"
 	sync
+
+	if [ "$BK_NEED_UMOUNT" = "1" ]; then
+		umount "$BK_MNT" 2>/dev/null || umount -l "$BK_MNT" 2>/dev/null || true
+		rmdir "$BK_MNT" 2>/dev/null || true
+		echo "      временный mount снят"
+	fi
 
 	BK_SIZE_KB=$(du -k "$BK_FILE" 2>/dev/null | awk '{print $1}')
 	echo -e "${CLR_GREEN}      архив: $BK_FILE (${BK_SIZE_KB}K)${CLR_RESET}"
@@ -1806,12 +1880,20 @@ if [ "$MODE" = "backup" ] || [ "$MODE" = "backup_manual" ]; then
 	exit 0
 fi
 
+
+
+
+
+
+
+
+
+
+
+
 # ============================================================
 #  ВЕТКА restore_archive — развернуть архив на указанную флешку.
 # ============================================================
-
-
-
 
 
 
@@ -1860,222 +1942,138 @@ if [ "$MODE" = "restore_archive" ]; then
 	fi
 	echo "      архив: $ARCHIVE_PATH"
 
-	# ---- Внутренний overlay (UBI/UBIFS) ----
+	# 1. Определяем и монтируем Цель
 	if [ "$BATCH_DEVICE" = "internal" ]; then
-		RESTORE_PART="internal"
-		RESTORE_TARGET="/overlay"
-		echo "      цель: внутренняя память роутера (/overlay)"
-
-		# --- Подход А: проверка свободного места по размеру архива ---
-		ARCHIVE_BYTES=$(wc -c < "$ARCHIVE_PATH" 2>/dev/null | tr -d ' ')
-		ARCHIVE_KB=$(( (ARCHIVE_BYTES + 1023) / 1024 ))
-
-		AVAIL_KB=$(df -k /overlay 2>/dev/null | awk 'NR==2 {print $4}')
-		if [ -z "$AVAIL_KB" ]; then
-			die "$CHOICE_TEXT" "Не смог определить свободное место на /overlay."
+		if is_internal_dev "$(quick_overlay_dev)"; then
+			RESTORE_PART="internal"
+			RESTORE_TARGET="/overlay"
+			echo "      цель: внутренняя память (АКТИВНА)"
+		else
+			RESTORE_PART=$(find_internal_overlay_dev)
+			if [ -z "$RESTORE_PART" ]; then
+				die "$CHOICE_TEXT" "Не нашёл внутренний overlay (UBI)."
+			fi
+			RESTORE_TARGET="/tmp/ubi_restore_archive"
+			mkdir -p "$RESTORE_TARGET"
+			umount "$RESTORE_TARGET" 2>/dev/null || true
+			if ! mount -t ubifs "$RESTORE_PART" "$RESTORE_TARGET" 2>/dev/null; then
+				die "$CHOICE_TEXT" "Не смог смонтировать $RESTORE_PART в $RESTORE_TARGET."
+			fi
+			echo "      цель: внутренняя память (неактивна, $RESTORE_PART)"
 		fi
-
-		# Запас 15%: журнал UBIFS, выравнивание, возможные различия сжатия.
-		NEED_KB=$(( ARCHIVE_KB + ARCHIVE_KB * 15 / 100 ))
-
-		echo "      архив: ${ARCHIVE_KB}K, свободно на /overlay: ${AVAIL_KB}K, нужно (с запасом): ${NEED_KB}K"
-
-		if [ "$AVAIL_KB" -lt "$NEED_KB" ]; then
-			die "$CHOICE_TEXT" "Мало места на /overlay для восстановления.
-	Архив (сжатый): ${ARCHIVE_KB}K
-	Свободно:      ${AVAIL_KB}K
-	Нужно:         ${NEED_KB}K (с запасом 15%)
-
-	Освободите место или используйте внешний носитель."
-		fi
-		echo -e "${CLR_GREEN}      места достаточно (по размеру архива)${CLR_RESET}"
-
 	else
-		# ---- Внешний накопитель (старая логика) ----
-		if [ -z "$BATCH_DEVICE" ] || [ ! -b "$BATCH_DEVICE" ]; then
-			die "$CHOICE_TEXT" "Целевое устройство не задано или не существует: $BATCH_DEVICE"
-		fi
 		RESTORE_PART="$BATCH_DEVICE"
-		RESTORE_TARGET=$(awk -v p="$RESTORE_PART" '$1==p {print $2; exit}' /proc/mounts)
-		if [ -z "$RESTORE_TARGET" ] || [ ! -d "$RESTORE_TARGET" ]; then
-			die "$CHOICE_TEXT" "Целевое устройство $RESTORE_PART не примонтировано."
+		if [ ! -b "$RESTORE_PART" ]; then
+			die "$CHOICE_TEXT" "Устройство не существует: $RESTORE_PART"
 		fi
-		echo "      цель: $RESTORE_PART -> $RESTORE_TARGET"
+		RESTORE_TARGET="/tmp/ext_restore_target"
+		mkdir -p "$RESTORE_TARGET"
+		umount "$RESTORE_TARGET" 2>/dev/null || true
+		if ! mount "$RESTORE_PART" "$RESTORE_TARGET" 2>/dev/null; then
+			die "$CHOICE_TEXT" "Не смог смонтировать $RESTORE_PART в $RESTORE_TARGET."
+		fi
+		echo "      цель: $RESTORE_PART (внешний накопитель)"
 	fi
 
+	# 2. Оценка свободного места ДО любых действий
+	ARCHIVE_BYTES=$(wc -c < "$ARCHIVE_PATH" 2>/dev/null | tr -d ' ')
+	ARCHIVE_KB=$(( (ARCHIVE_BYTES + 1023) / 1024 ))
+	NEED_KB=$(( ARCHIVE_KB + ARCHIVE_KB * 15 / 100 )) # Коэффициент 1.15
 
+	AVAIL_KB=$(df -k "$RESTORE_TARGET" 2>/dev/null | awk 'NR==2 {print $4}')
+	TARGET_UPPER_KB=0
+	if [ -d "$RESTORE_TARGET/upper" ]; then
+		TARGET_UPPER_KB=$(du -sk "$RESTORE_TARGET/upper" 2>/dev/null | awk '{print $1}')
+	fi
+	TOTAL_AVAIL_KB=$(( AVAIL_KB + TARGET_UPPER_KB ))
 
+	echo "      оценка: архив ${ARCHIVE_KB}K (с запасом ${NEED_KB}K), свободно на Цели: ${AVAIL_KB}K, upper на Цели: ${TARGET_UPPER_KB}K"
+	if [ "$TOTAL_AVAIL_KB" -lt "$NEED_KB" ]; then
+		umount "$RESTORE_TARGET" 2>/dev/null || true
+		die "$CHOICE_TEXT" "Недостаточно места на Цели.
+	Доступно (свободно + upper): ${TOTAL_AVAIL_KB}K
+	Требуется (архив + 15%):      ${NEED_KB}K"
+	fi
+	echo -e "${CLR_GREEN}      места достаточно (по размеру архива)${CLR_RESET}"
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+	# 3. Проверка безопасности архива
 	if ! tar -tzf "$ARCHIVE_PATH" 2>/dev/null | grep -q '^overlay/upper/etc/config/'; then
-		die "$CHOICE_TEXT" "Это не бэкап overlay. В архиве нет пути overlay/upper/etc/config/.
-	Скорее всего, это архив конфигурации (LuCI/Sysupgrade).
-	Используйте штатное восстановление или выберите архив, созданный кнопкой «Создать бэкап»."
+		umount "$RESTORE_TARGET" 2>/dev/null || true
+		die "$CHOICE_TEXT" "Это не бэкап overlay. В архиве нет пути overlay/upper/etc/config/."
+	fi
+	TAR_LIST=$(tar -tzf "$ARCHIVE_PATH" 2>/dev/null) || { umount "$RESTORE_TARGET" 2>/dev/null; die "$CHOICE_TEXT" "Не читается tar."; }
+	if echo "$TAR_LIST" | grep -qE '^/'; then umount "$RESTORE_TARGET" 2>/dev/null; die "$CHOICE_TEXT" "Архив содержит абсолютные пути."; fi
+	if echo "$TAR_LIST" | grep -qE '(^|/)\.\.(/|$)'; then umount "$RESTORE_TARGET" 2>/dev/null; die "$CHOICE_TEXT" "Архив содержит '..' в путях."; fi
+
+	# 4. Выбор места для staging
+	CUR_DEV=$(quick_overlay_dev)
+	if [ "$RESTORE_PART" = "$CUR_DEV" ] || { [ "$RESTORE_PART" = "internal" ] && is_internal_dev "$CUR_DEV"; }; then
+		STAGING="/tmp/overlay_stage"
+		echo "      цель АКТИВНА, staging в ОЗУ"
+	else
+		STAGING=""
+		for m in $(awk '$3=="ext4" || $3=="f2fs" || $3=="btrfs" {print $2}' /proc/mounts); do
+			[ "$m" = "$RESTORE_TARGET" ] && continue
+			M_AVAIL=$(df -k "$m" 2>/dev/null | awk 'NR==2 {print $4}')
+			if [ -n "$M_AVAIL" ] && [ "$M_AVAIL" -gt "$NEED_KB" ]; then
+				STAGING="$m/.usb-extroot-staging"
+				break
+			fi
+		done
+		if [ -z "$STAGING" ]; then
+			STAGING="/tmp/overlay_stage"
+			echo "      цель НЕАКТИВНА, но свободных дисков нет, staging в ОЗУ"
+		else
+			echo "      цель НЕАКТИВНА, staging на $STAGING"
+		fi
 	fi
 
-	echo "      проверяю архив на небезопасное содержимое..."
+	rm -rf "$STAGING"
+	mkdir -p "$STAGING"
 
-	TAR_LIST=$(tar -tzf "$ARCHIVE_PATH" 2>/dev/null) || die "$CHOICE_TEXT" "Не читается tar."
-	if echo "$TAR_LIST" | grep -qE '^/'; then
-		die "$CHOICE_TEXT" "Архив содержит абсолютные пути — отклонён."
-	fi
-	if echo "$TAR_LIST" | grep -qE '(^|/)\.\.(/|$)'; then
-		die "$CHOICE_TEXT" "Архив содержит '..' в путях — отклонён."
-	fi
-
-	UNSAFE=$(tar -tvzf "$ARCHIVE_PATH" 2>/dev/null | awk '
-		{
-			perm = $1
-			if (perm ~ /^[cbp]/) { print "device/fifo: " $0; next }
-			if (perm ~ /[sS]/)   { print "suid/sgid: " $0;  next }
-		}
-	')
-	if [ -n "$UNSAFE" ]; then
-		echo "      опасное содержимое (первые строки):"
-		echo "$UNSAFE" | head -5
+	# 5. Распаковка
+	echo "      распаковываю архив в $STAGING ..."
+	if ! tar -xzf "$ARCHIVE_PATH" -C "$STAGING" 2>/tmp/tar_restore.err; then
+		umount "$RESTORE_TARGET" 2>/dev/null || true
+		rm -rf "$STAGING"
+		die "$CHOICE_TEXT" "Не удалось распаковать архив."
 	fi
 
-	echo -e "${CLR_GREEN}      архив безопасен${CLR_RESET}"
+	if [ ! -d "$STAGING/overlay/upper" ]; then
+		umount "$RESTORE_TARGET" 2>/dev/null || true
+		rm -rf "$STAGING"
+		die "$CHOICE_TEXT" "В архиве нет overlay/upper."
+	fi
 
+	# 6. Деструктивная фаза
+	echo "      переношу upper на Цель..."
 	rm -rf "$RESTORE_TARGET/upper"
 	mkdir -p "$RESTORE_TARGET/work"
 
-	echo "      распаковываю архив в $RESTORE_TARGET ..."
-	if ! tar -xzf "$ARCHIVE_PATH" -C "$RESTORE_TARGET" 2>/tmp/tar_restore.err; then
-		rc=$?
-		echo "      tar errors (exit code: $rc):"
-		if [ -s /tmp/tar_restore.err ]; then
-			head -20 /tmp/tar_restore.err
-		else
-			if [ "$rc" -eq 137 ] || [ "$rc" -eq 143 ]; then
-				echo "        [OOM] Процесс убит OOM-killer'ом из-за нехватки ОЗУ."
-			else
-				echo "        [ENOSPC/ERR] stderr пуст. Вероятно, закончилось место."
-			fi
-		fi
-		die "$CHOICE_TEXT" "Не удалось распаковать архив.
-	Цель: $RESTORE_PART ($RESTORE_TARGET)
-	архив: $ARCHIVE_PATH"
+	if ! mv "$STAGING/overlay/upper" "$RESTORE_TARGET/upper" 2>/dev/null; then
+		umount "$RESTORE_TARGET" 2>/dev/null || true
+		rm -rf "$STAGING"
+		die "$CHOICE_TEXT" "Не смог переместить upper на Цель."
 	fi
-
-	if [ ! -d "$RESTORE_TARGET/overlay/upper" ]; then
-		die "$CHOICE_TEXT" "В архиве нет overlay/upper.
-	Проверь: tar -tzf '$ARCHIVE_PATH' | head -20"
-	fi
-	echo "      переношу overlay/upper -> upper"
-	rm -rf "$RESTORE_TARGET/upper"
-	if ! mv "$RESTORE_TARGET/overlay/upper" "$RESTORE_TARGET/upper" 2>/dev/null; then
-		die "$CHOICE_TEXT" "Не смог переместить $RESTORE_TARGET/overlay/upper -> $RESTORE_TARGET/upper."
-	fi
-	rm -rf "$RESTORE_TARGET/overlay"
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+	rm -rf "$STAGING"
 
 	if [ ! -d "$RESTORE_TARGET/upper/etc/config" ]; then
-		die "$CHOICE_TEXT" "После распаковки в $RESTORE_TARGET/upper нет etc/config."
+		umount "$RESTORE_TARGET" 2>/dev/null || true
+		die "$CHOICE_TEXT" "После распаковки на Цели нет upper/etc/config."
 	fi
 
-	# ---- Перенос upper в целевой overlay ----
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	if [ "$RESTORE_PART" = "internal" ]; then
-		# Внутренний overlay: /overlay/upper
-		# К этому моменту общий код УЖЕ выполнил:
-		#   rm -rf /overlay/upper
-		#   mv /overlay/overlay/upper /overlay/upper
-		#   rm -rf /overlay/overlay
-		# То есть /overlay/upper уже содержит распакованный архив.
-		# Остаётся work, fstab и reboot-helper.
-		mkdir -p /overlay/work
-
-		clear_fstab_extroot
-		echo "      fstab в живой системе очищен (extroot не нужен)."
-
-		create_reboot_helper "/overlay/upper" "RESTORE-ARCHIVE"
-
-		echo -e "${CLR_GREEN}      upper перенесён во внутренний overlay${CLR_RESET}"
-
+	# 7. Настройка fstab и reboot-helper
+	if [ "$BATCH_DEVICE" = "internal" ]; then
+		clear_fstab_extroot "$RESTORE_TARGET/upper/etc/config"
+		echo "      fstab в internal очищен (extroot не нужен)."
+		create_reboot_helper "$RESTORE_TARGET/upper" "RESTORE-ARCHIVE"
 	else
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-		# Внешний накопитель (старая логика)
 		RESTORE_UUID=$(get_partition_uuid "$RESTORE_PART")
 		if [ -z "$RESTORE_UUID" ]; then
+			umount "$RESTORE_TARGET" 2>/dev/null || true
 			die "$CHOICE_TEXT" "Не получил UUID для $RESTORE_PART."
 		fi
-
 		RESTORE_CFG="$RESTORE_TARGET/upper/etc/config"
-		echo "      заменяю $RESTORE_CFG/fstab (без extroot)"
 		cat > "$RESTORE_CFG/fstab" <<FSTAB_EOF
 config global
 	option anon_swap '0'
@@ -2088,92 +2086,68 @@ FSTAB_EOF
 
 		clear_fstab_extroot
 
-		echo "      настраиваю extroot во внутренней памяти (UBI)..."
 		UBI_DEV=$(find_internal_overlay_dev)
 		if [ -n "$UBI_DEV" ]; then
-			UBI_MNT=/tmp/ubi_restore
+			UBI_MNT=/tmp/ubi_fstab
 			mkdir -p "$UBI_MNT"
 			if mount -t ubifs "$UBI_DEV" "$UBI_MNT" 2>/dev/null || mount "$UBI_DEV" "$UBI_MNT" 2>/dev/null; then
 				UBI_CFG="$UBI_MNT/upper/etc/config"
 				if [ -d "$UBI_CFG" ]; then
 					apply_fstab_extroot "$RESTORE_UUID" "$UBI_CFG"
-					echo "      extroot: UUID=$RESTORE_UUID -> /overlay (сохранено в UBI)"
 				fi
 				umount "$UBI_MNT" 2>/dev/null || true
 				rmdir "$UBI_MNT" 2>/dev/null || true
-			else
-				echo -e "${CLR_ORANGE}      ВНИМАНИЕ: не смог смонтировать UBI для записи extroot!${CLR_RESET}"
 			fi
 		fi
-
-		echo -e "      extroot: UUID=${CLR_YELLOW}$RESTORE_UUID${CLR_RESET} ($RESTORE_PART) -> /overlay"
-
 		create_reboot_helper "$RESTORE_TARGET" "RESTORE-ARCHIVE"
 	fi
 
 	sync
 	sleep 2
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
+	umount "$RESTORE_TARGET" 2>/dev/null || true
 
 	echo
 	echo -e "${CLR_GREEN}================================================================${CLR_RESET}"
 	echo -e "${CLR_GREEN} Готово. Архив развёрнут на $RESTORE_PART.${CLR_RESET}"
 	echo -e "${CLR_GREEN} Роутер будет перезагружен и загрузится с $RESTORE_PART.${CLR_RESET}"
 	echo -e "${CLR_GREEN}================================================================${CLR_RESET}"
+	
+	if [ "$BATCH" = "1" ]; then
+		echo
+		echo "ОЖИДАНИЕ ПОДТВЕРЖДЕНИЯ ПЕРЕЗАГРУЗКИ ПОЛЬЗОВАТЕЛЕМ (до 10 мин)..."
+		echo
+		i=0
+		while [ "$i" -lt 600 ]; do
+			[ -f /tmp/usb-extroot-reboot-now ] && break
+			sleep 1
+			i=$((i + 1))
+		done
+		#rm -f /tmp/usb-extroot-reboot-now
+	fi
 
 	confirm_reboot_or_die 0
+
 	exit 0
 fi
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 # ============================================================
 #  МЕНЮ (interactive)
@@ -2554,13 +2528,11 @@ if [ -z "$SRC_SIZE_KB" ] || [ -z "$TMP_AVAIL_KB" ]; then
 	die "$STAGE3" "Не смог определить размер overlay или /tmp."
 fi
 
-# 1.25x от размера оверлея достаточно: staging (1x) + сжатый архив (0.25x).
-NEED_TMP_KB=$(( SRC_SIZE_KB + SRC_SIZE_KB / 4 ))
+NEED_TMP_KB=$(( SRC_SIZE_KB * 2 + SRC_SIZE_KB / 10 ))
 if [ "$TMP_AVAIL_KB" -lt "$NEED_TMP_KB" ]; then
 	die "$STAGE3" "Мало места в /tmp для staging + архив.
 	Нужно: ${NEED_TMP_KB}K, свободно: ${TMP_AVAIL_KB}K."
 fi
-
 echo -e "${CLR_GREEN}      ок, в /tmp места хватает${CLR_RESET}"
 
 if [ ! -d "$CUR_OVERLAY_MP/upper/etc/config" ]; then
@@ -2943,10 +2915,6 @@ if [ "$BATCH" != "1" ]; then
 else
 	echo "      архив готов для скачивания через веб-интерфейс"
 	echo -e "      \033[38;2;17;17;17mEXTROOT_READY_CODE_777888\033[0m\n"
-    # Запускаем "вечную паузу" ЗАРАНЕЕ, пока идет STAGE9.
-    # Тогда, если пользователь нажмет "Перезагрузить" прямо сейчас, killall сработает.
-    sleep 37173 &
-    SLEEP_PID=$!
 fi
 
 echo
@@ -2963,32 +2931,8 @@ if [ -z "$UUID" ]; then
 	fatal "$STAGE9" "Не получил UUID для $PART."
 fi
 
+apply_fstab_extroot "$UUID"
 apply_fstab_extroot "$UUID" "$CFG"
-
-if is_internal_dev "$ORIG_DEV"; then
-    # Обычный перенос (Внутренняя память -> Флешка). Живой fstab (UBI) обновляем напрямую.
-    apply_fstab_extroot "$UUID"
-else
-    # Клон (Флешка А -> Флешка Б). Живой fstab находится на Флешке А.
-    # НЕ ТРОГАЕМ его, чтобы не сломать Флешку А.
-    # Вместо этого обновляем fstab во внутренней памяти роутера (UBI).
-    UBI_DEV=$(find_internal_overlay_dev)
-    if [ -n "$UBI_DEV" ]; then
-        UBI_MNT=/tmp/ubi_fstab
-        mkdir -p "$UBI_MNT"
-        if mount -t ubifs "$UBI_DEV" "$UBI_MNT" 2>/dev/null || mount "$UBI_DEV" "$UBI_MNT" 2>/dev/null; then
-            UBI_CFG="$UBI_MNT/upper/etc/config"
-            if [ -d "$UBI_CFG" ]; then
-                apply_fstab_extroot "$UUID" "$UBI_CFG"
-                echo "      extroot: UUID=$UUID -> /overlay (сохранено в UBI)"
-            fi
-            umount "$UBI_MNT" 2>/dev/null || true
-            rmdir "$UBI_MNT" 2>/dev/null || true
-        else
-            echo -e "${CLR_ORANGE}      ВНИМАНИЕ: не смог смонтировать UBI для записи extroot!${CLR_RESET}"
-        fi
-    fi
-fi
 
 echo -e "      extroot: UUID=${CLR_YELLOW}$UUID${CLR_RESET} -> /overlay"
 echo "Проверка живого fstab:"
@@ -3002,12 +2946,14 @@ create_reboot_helper "$MNT/upper" "MAIN"
 sync
 sleep 3
 
-if [ "$BATCH" = "1" ]; then
 	echo -e "ОЖИДАНИЕ СКАЧИВАНИЯ АРХИВА (ожидание подтверждения пользователя)..."
-    # Ждем фоновый sleep, запущенный еще на этапе [8/9].
-    # Если он был убит через веб-интерфейс, wait завершится моментально.
-	wait $SLEEP_PID 2>/dev/null || true
-fi
+	i=0
+	while [ "$i" -lt 600 ]; do
+		[ -f /tmp/usb-extroot-reboot-now ] && break
+		sleep 1
+		i=$((i + 1))
+	done
+	#rm -f /tmp/usb-extroot-reboot-now
 
 
 echo -e "${CLR_GREEN}================================================================${CLR_RESET}"
