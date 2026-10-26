@@ -1863,16 +1863,34 @@ if [ "$MODE" = "restore_archive" ]; then
 	# ---- Внутренний overlay (UBI/UBIFS) ----
 	if [ "$BATCH_DEVICE" = "internal" ]; then
 		RESTORE_PART="internal"
-		RESTORE_TARGET="/overlay"
-		echo "      цель: внутренняя память роутера (/overlay)"
+
+		if ! is_internal_dev "$(quick_overlay_dev)"; then
+			# Загружены с extroot, нужно найти UBI и монтировать его
+			UBI_DEV=$(find_internal_overlay_dev)
+			if [ -z "$UBI_DEV" ]; then
+				die "$CHOICE_TEXT" "Не нашёл внутренний overlay (UBI)."
+			fi
+			UBI_MNT="/tmp/ubi_restore_archive"
+			mkdir -p "$UBI_MNT"
+			if ! mount -t ubifs "$UBI_DEV" "$UBI_MNT" 2>/dev/null; then
+				die "$CHOICE_TEXT" "Не смог смонтировать $UBI_DEV в $UBI_MNT."
+			fi
+			RESTORE_TARGET="$UBI_MNT"
+			echo "      цель: внутренняя память роутера ($UBI_DEV)"
+			UBI_MOUNTED=1
+		else
+			RESTORE_TARGET="/overlay"
+			echo "      цель: внутренняя память роутера (/overlay)"
+			UBI_MOUNTED=0
+		fi
 
 		# --- Подход А: проверка свободного места по размеру архива ---
 		ARCHIVE_BYTES=$(wc -c < "$ARCHIVE_PATH" 2>/dev/null | tr -d ' ')
 		ARCHIVE_KB=$(( (ARCHIVE_BYTES + 1023) / 1024 ))
 
-		AVAIL_KB=$(df -k /overlay 2>/dev/null | awk 'NR==2 {print $4}')
+		AVAIL_KB=$(df -k "$RESTORE_TARGET" 2>/dev/null | awk 'NR==2 {print $4}')
 		if [ -z "$AVAIL_KB" ]; then
-			die "$CHOICE_TEXT" "Не смог определить свободное место на /overlay."
+			die "$CHOICE_TEXT" "Не смог определить свободное место на $RESTORE_TARGET."
 		fi
 
 		# Запас 15%: журнал UBIFS, выравнивание, возможные различия сжатия.
@@ -2037,36 +2055,25 @@ if [ "$MODE" = "restore_archive" ]; then
 	
 	
 	if [ "$RESTORE_PART" = "internal" ]; then
-		# Внутренний overlay: /overlay/upper
-		# К этому моменту общий код УЖЕ выполнил:
-		#   rm -rf /overlay/upper
-		#   mv /overlay/overlay/upper /overlay/upper
-		#   rm -rf /overlay/overlay
-		# То есть /overlay/upper уже содержит распакованный архив.
-		# Остаётся work, fstab и reboot-helper.
-		mkdir -p /overlay/work
-
-		clear_fstab_extroot
-		echo "      fstab в живой системе очищен (extroot не нужен)."
-
-		create_reboot_helper "/overlay/upper" "RESTORE-ARCHIVE"
-
-		echo -e "${CLR_GREEN}      upper перенесён во внутренний overlay${CLR_RESET}"
+		if [ "$UBI_MOUNTED" = "1" ]; then
+			mkdir -p "$RESTORE_TARGET/work"
+			clear_fstab_extroot "$RESTORE_TARGET/upper/etc/config"
+			echo "      fstab в UBI очищен (extroot не нужен)."
+			create_reboot_helper "$RESTORE_TARGET/upper" "RESTORE-ARCHIVE"
+			sync
+			umount "$UBI_MNT" 2>/dev/null || true
+			rmdir "$UBI_MNT" 2>/dev/null || true
+			echo -e "${CLR_GREEN}      upper записан во внутреннюю память ($UBI_DEV)${CLR_RESET}"
+		else
+			mkdir -p /overlay/work
+			clear_fstab_extroot
+			echo "      fstab в живой системе очищен (extroot не нужен)."
+			create_reboot_helper "/overlay/upper" "RESTORE-ARCHIVE"
+			echo -e "${CLR_GREEN}      upper перенесён во внутренний overlay${CLR_RESET}"
+		fi
 
 	else
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
+
 	
 		# Внешний накопитель (старая логика)
 		RESTORE_UUID=$(get_partition_uuid "$RESTORE_PART")
@@ -2554,13 +2561,11 @@ if [ -z "$SRC_SIZE_KB" ] || [ -z "$TMP_AVAIL_KB" ]; then
 	die "$STAGE3" "Не смог определить размер overlay или /tmp."
 fi
 
-# 1.25x от размера оверлея достаточно: staging (1x) + сжатый архив (0.25x).
-NEED_TMP_KB=$(( SRC_SIZE_KB + SRC_SIZE_KB / 4 ))
+NEED_TMP_KB=$(( SRC_SIZE_KB * 2 + SRC_SIZE_KB / 10 ))
 if [ "$TMP_AVAIL_KB" -lt "$NEED_TMP_KB" ]; then
 	die "$STAGE3" "Мало места в /tmp для staging + архив.
 	Нужно: ${NEED_TMP_KB}K, свободно: ${TMP_AVAIL_KB}K."
 fi
-
 echo -e "${CLR_GREEN}      ок, в /tmp места хватает${CLR_RESET}"
 
 if [ ! -d "$CUR_OVERLAY_MP/upper/etc/config" ]; then
@@ -2943,10 +2948,6 @@ if [ "$BATCH" != "1" ]; then
 else
 	echo "      архив готов для скачивания через веб-интерфейс"
 	echo -e "      \033[38;2;17;17;17mEXTROOT_READY_CODE_777888\033[0m\n"
-    # Запускаем "вечную паузу" ЗАРАНЕЕ, пока идет STAGE9.
-    # Тогда, если пользователь нажмет "Перезагрузить" прямо сейчас, killall сработает.
-    sleep 37173 &
-    SLEEP_PID=$!
 fi
 
 echo
@@ -2963,32 +2964,8 @@ if [ -z "$UUID" ]; then
 	fatal "$STAGE9" "Не получил UUID для $PART."
 fi
 
+apply_fstab_extroot "$UUID"
 apply_fstab_extroot "$UUID" "$CFG"
-
-if is_internal_dev "$ORIG_DEV"; then
-    # Обычный перенос (Внутренняя память -> Флешка). Живой fstab (UBI) обновляем напрямую.
-    apply_fstab_extroot "$UUID"
-else
-    # Клон (Флешка А -> Флешка Б). Живой fstab находится на Флешке А.
-    # НЕ ТРОГАЕМ его, чтобы не сломать Флешку А.
-    # Вместо этого обновляем fstab во внутренней памяти роутера (UBI).
-    UBI_DEV=$(find_internal_overlay_dev)
-    if [ -n "$UBI_DEV" ]; then
-        UBI_MNT=/tmp/ubi_fstab
-        mkdir -p "$UBI_MNT"
-        if mount -t ubifs "$UBI_DEV" "$UBI_MNT" 2>/dev/null || mount "$UBI_DEV" "$UBI_MNT" 2>/dev/null; then
-            UBI_CFG="$UBI_MNT/upper/etc/config"
-            if [ -d "$UBI_CFG" ]; then
-                apply_fstab_extroot "$UUID" "$UBI_CFG"
-                echo "      extroot: UUID=$UUID -> /overlay (сохранено в UBI)"
-            fi
-            umount "$UBI_MNT" 2>/dev/null || true
-            rmdir "$UBI_MNT" 2>/dev/null || true
-        else
-            echo -e "${CLR_ORANGE}      ВНИМАНИЕ: не смог смонтировать UBI для записи extroot!${CLR_RESET}"
-        fi
-    fi
-fi
 
 echo -e "      extroot: UUID=${CLR_YELLOW}$UUID${CLR_RESET} -> /overlay"
 echo "Проверка живого fstab:"
@@ -3004,8 +2981,8 @@ sleep 3
 
 if [ "$BATCH" = "1" ]; then
 	echo -e "ОЖИДАНИЕ СКАЧИВАНИЯ АРХИВА (ожидание подтверждения пользователя)..."
-    # Ждем фоновый sleep, запущенный еще на этапе [8/9].
-    # Если он был убит через веб-интерфейс, wait завершится моментально.
+	sleep 37173 &
+	SLEEP_PID=$!
 	wait $SLEEP_PID 2>/dev/null || true
 fi
 
