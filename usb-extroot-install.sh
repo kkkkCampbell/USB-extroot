@@ -5,6 +5,7 @@
 # ============================================================
 TEST_MODE=0
 BASE_DIR="/opt/usb-extroot"
+rm -f /tmp/usb-extroot-reboot-now # на всякий случай	
 
 die() { echo "ОШИБКА: $1" >&2; exit 1; }
 need_dir()  { [ -d "$1" ] || die "каталог $1 не создан"; }
@@ -277,8 +278,7 @@ method_api_write_token() {
 }
 
 method_abort_sleep() {
-    killall sleep 37173 2>/dev/null || true
-    echo '{ "result": { "status": "aborted" } }'
+    touch /tmp/usb-extroot-reboot-now 2>/dev/null || true
 }
 
 method_status() {
@@ -553,6 +553,10 @@ method_run() {
             ;;
         restore_archive)
             if [ -z "$archive" ]; then _fail "archive required for restore_archive"; return; fi
+            ;;
+        backup_manual)
+            # device может быть active|internal|/dev/... — оставляем как есть
+            archive=""
             ;;
         *)
             device=""; archive=""
@@ -1296,28 +1300,30 @@ return view.extend({
         }).catch(function(err) { ui.addNotification(null, E('p', {}, 'Ошибка получения списков: ' + err), 'danger'); });
     },
 
-    runOp: function(mode, device, archive, logPre) {
+runOp: function(mode, device, archive, logPre) {
         var self = this;
         if (!writeToken) { ui.addNotification(null, E('p', {}, 'Это действие требует write-ACL.'), 'danger'); return; }
         if (!mode) { ui.addNotification(null, E('p', {}, 'Выберите действие.'), 'warning'); return; }
         if ((mode === 'format' || mode === 'noformat') && !device) { ui.addNotification(null, E('p', {}, 'Выберите накопитель.'), 'danger'); return; }
         if (mode === 'switch_overlay' && !device) { ui.addNotification(null, E('p', {}, 'Выберите целевой накопитель.'), 'danger'); return; }
 
-        if (mode === 'restore_archive' && device === 'internal') {
-            self.showBackupPrompt(archive, logPre);
+        if (mode === 'restore_archive') {
+            // Гарантируем, что device передается как строка, а не падает в неопределенность при многодисковом хабе
+            var targetDev = (typeof device === 'string') ? device : (device && device.dev ? device.dev : 'internal');
+            self.showBackupPrompt(targetDev, archive, logPre);
             return;
         }
 
         self.showConfirmDialog(mode, device, archive, logPre);
     },
 
-    showBackupPrompt: function(archive, logPre) {
+    showBackupPrompt: function(device, archive, logPre) {
         var self = this;
         var body = E('div', {}, [
             E('p', { 'style': 'font-weight:bold; color:#ffaa00;' },
-                'Восстановление на внутреннюю память роутера (/overlay).'),
+                'Восстановление на ' + (device === 'internal' ? 'внутреннюю память роутера (/overlay)' : 'внешний накопитель') + '.'),
             E('p', {},
-                'Текущий overlay будет уничтожен в процессе восстановления. Рекомендуем сначала сохранить его в архив и скачать на компьютер — на случай, если после восстановления что-то пойдёт не так.'),
+                'Текущий overlay на Цели будет уничтожен в процессе восстановления. Рекомендуем сначала сохранить его в архив и скачать на компьютер — на случай, если после восстановления что-то пойдёт не так.'),
             E('p', {}, 'Выберите действие:')
         ]);
         var footer = E('div', { 'style': 'display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;' }, [
@@ -1329,39 +1335,56 @@ return view.extend({
                 'class': 'cbi-button cbi-button-negative',
                 'click': function() {
                     ui.hideModal();
-                    self.showConfirmDialog('restore_archive', 'internal', archive, logPre);
+                    // Отказ от бэкапа → сразу метка: после restore паузу не ждём
+                    callAbortSleep().catch(function() {}).then(function() {
+                        self.showConfirmDialog('restore_archive', device, archive, logPre);
+                    });
                 }
             }, 'Восстановить без бэкапа'),
             E('button', {
                 'class': 'cbi-button cbi-button-apply',
                 'click': function() {
                     ui.hideModal();
-                    self.doBackupThenRestore(archive, logPre);
+                    self.doBackupThenRestore(device, archive, logPre);
                 }
             }, 'Сначала бэкап, потом восстановить')
         ]);
         ui.showModal('Сохранить текущее состояние?', [ body, footer ]);
     },
 
-    doBackupThenRestore: function(archive, logPre) {
+    doBackupThenRestore: function(device, archive, logPre) {
         var self = this;
         logPre.textContent = '';
         self._lockUI(true);
 
-        callRun('backup_manual', '', '', 'yes').then(function(res) {
+        callRun('backup_manual', device, '', 'yes').then(function(res) {
             if (res && res.error) {
                 ui.addNotification(null, E('p', {}, 'Ошибка запуска бэкапа: ' + res.error), 'danger');
                 self._lockUI(false);
                 return;
             }
-            self._pollBackupThenRestore(archive, logPre);
+            self._pollBackupThenRestore(device, archive, logPre);
         }).catch(function(err) {
             ui.addNotification(null, E('p', {}, 'Ошибка запуска бэкапа: ' + err), 'danger');
             self._lockUI(false);
         });
     },
 
-    _pollBackupThenRestore: function(archive, logPre) {
+    
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	    _pollBackupThenRestore: function(device, archive, logPre) {
         var self = this;
         var downloaded = false;
         var completed = false;
@@ -1400,9 +1423,10 @@ return view.extend({
                         completed = true;
                         clearInterval(timer);
                         var proceed = function() {
+                            var targetLabel = (device === 'internal') ? 'внутреннюю память' : device;
                             ui.addNotification(null, E('p', {},
-                                'Бэкап готов. Переходим к восстановлению архива на внутреннюю память.'), 'info');
-                            self.showConfirmDialog('restore_archive', 'internal', archive, logPre);
+                                'Бэкап готов. Переходим к восстановлению архива на ' + targetLabel + '.'), 'info');
+                            self.showConfirmDialog('restore_archive', device, archive, logPre);
                         };
                         if (downloadPromise) {
                             downloadPromise.then(function() { setTimeout(proceed, 1000); })
@@ -1415,6 +1439,16 @@ return view.extend({
             }).catch(function() {});
         }, 1000);
     },
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
 
     showConfirmDialog: function(mode, device, archive, logPre) {
         var self = this;
@@ -1675,8 +1709,8 @@ if [ -n "$FILE" ]; then
     name=$(basename "$FOUND"); size=$(ls -l "$FOUND" | awk '{print $5}'); size=${size:-0}
     echo "Content-Type: application/gzip"; echo "Content-Length: $size"
     echo "Content-Disposition: attachment; filename=\"$name\""; echo "Cache-Control: no-store"; echo
-    dd if="$FOUND" bs=65536 2>/dev/null; exit 0
-fi
+    dd if="$FOUND" bs=1M 2>/dev/null; exit 0
+	fi
 
 latest=$(ls -t /tmp/.usb-extroot-*/*.tar.gz \
               /tmp/.usb-extroot-*/manual/*.tar.gz \
@@ -1687,7 +1721,7 @@ if [ -z "$latest" ] || [ ! -f "$latest" ]; then echo "Status: 404 Not Found"; ec
 name=$(basename "$latest"); size=$(ls -l "$latest" | awk '{print $5}'); size=${size:-0}
 echo "Content-Type: application/gzip"; echo "Content-Length: $size"
 echo "Content-Disposition: attachment; filename=\"$name\""; echo "Cache-Control: no-store"; echo
-dd if="$latest" bs=65536 2>/dev/null
+dd if="$latest" bs=1M 2>/dev/null
 CGI_EOF
 
 need_sh "$BASE_DIR/archive.cgi"
@@ -1926,4 +1960,4 @@ health_check() {
 }
 
 health_check
-exit $?
+exit $? 
