@@ -1,6 +1,6 @@
 #!/bin/sh
 # ============================================================
-#  usb-extroot.sh  v0.1.43.12-draft
+#  usb-extroot.sh  v0.1.43.14-draft
 #  Перенос overlay OpenWrt на USB-накопитель (extroot)
 #  Лог: /tmp/usb-extroot.log
 #  Бэкап: /tmp/.usb-extroot-x7k2m9q4p1w8/
@@ -8,7 +8,7 @@
 #  sh <( wget -qO- https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft/usb-extroot-install.sh )
 #  sh /usb-extroot-install.sh
 # ============================================================
-ver="v0.1.43.12-draft"
+ver="v0.1.43.14-draft"
 SRC_BASE="https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft"
 TEST_MODE=0
 
@@ -2153,11 +2153,9 @@ FSTAB_EOF
 	echo -e "${CLR_GREEN}================================================================${CLR_RESET}"
 	
 	if [ "$BATCH" = "1" ]; then	
-		echo
-		echo -e "${CLR_GREEN}================================================================${CLR_RESET}"
-		echo
-		echo " ОЖИДАНИЕ ПОДТВЕРЖДЕНИЯ ПЕРЕЗАГРУЗКИ ПОЛЬЗОВАТЕЛЕМ (до 10 мин)..."
 		echo -e " \033[38;2;17;17;17mEXTROOT_READY_CODE_777888\033[0m\n"
+		echo -e "${CLR_GREEN}================================================================${CLR_RESET}"
+		echo " ${CLR_GREEN}ОЖИДАНИЕ ПОДТВЕРЖДЕНИЯ ПЕРЕЗАГРУЗКИ ПОЛЬЗОВАТЕЛЕМ (до 10 мин)...${CLR_RESET}"
 		echo -e "${CLR_GREEN}================================================================${CLR_RESET}"
 		echo
 		i=0
