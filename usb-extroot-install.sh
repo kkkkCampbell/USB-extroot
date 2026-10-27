@@ -1341,13 +1341,16 @@ runOp: function(mode, device, archive, logPre) {
                     });
                 }
             }, 'Восстановить без бэкапа'),
-            E('button', {
-                'class': 'cbi-button cbi-button-apply',
-                'click': function() {
-                    ui.hideModal();
-                    self.doBackupThenRestore(device, archive, logPre);
-                }
-            }, 'Сначала бэкап, потом восстановить')
+			E('button', {
+			                'class': 'cbi-button cbi-button-apply',
+			                'click': function() {
+			                    ui.hideModal();
+			                    // Вызываем метод сброса ожидания/сна, аналогично варианту без бэкапа
+			                    callAbortSleep().catch(function() {}).then(function() {
+			                        self.doBackupThenRestore(device, archive, logPre);
+			                    });
+			                }
+				}, 'Сначала бэкап, потом восстановить')
         ]);
         ui.showModal('Сохранить текущее состояние?', [ body, footer ]);
     },
