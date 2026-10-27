@@ -1609,10 +1609,11 @@ runOp: function(mode, device, archive, logPre) {
                 }
             }).catch(function() {});
 
-            if (watchArchiveInfo && !archiveDownloaded && mode !== 'switch_overlay') {
+if (watchArchiveInfo && !archiveDownloaded && mode !== 'switch_overlay') {
                 callArchiveInfo().then(function(res) {
                     var r = unwrap(res);
-                    if (r && r.exists === 'yes' && !archiveDownloaded) {
+                    // Добавляем режим restore_archive, чтобы он тоже триггерил модалку
+                    if (r && (r.exists === 'yes' || mode === 'restore_archive') && !archiveDownloaded) {
                         archiveDownloaded = true;
                         showDownloadModal();
                     }
