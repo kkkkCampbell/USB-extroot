@@ -5,7 +5,25 @@
 # ============================================================
 TEST_MODE=0
 BASE_DIR="/opt/usb-extroot"
-rm -f /tmp/usb-extroot-reboot-now # на всякий случай	
+rm -f /tmp/usb-extroot-reboot-now # на всякий случай
+clear
+
+
+# ------------------------------------------------------------
+#  3. Цвета
+# ------------------------------------------------------------
+if [ "$BATCH" = "1" ]; then
+	CLR_RESET=""
+	CLR_GREEN=""
+	CLR_ORANGE=""
+	CLR_YELLOW=""
+else
+	CLR_RESET="\033[0m"
+	CLR_GREEN="\033[32m"
+	CLR_ORANGE="\033[38;5;208m"
+	CLR_YELLOW="\033[33m"
+fi
+
 
 die() { echo "ОШИБКА: $1" >&2; exit 1; }
 need_dir()  { [ -d "$1" ] || die "каталог $1 не создан"; }
@@ -1341,16 +1359,13 @@ runOp: function(mode, device, archive, logPre) {
                     });
                 }
             }, 'Восстановить без бэкапа'),
-			E('button', {
-			                'class': 'cbi-button cbi-button-apply',
-			                'click': function() {
-			                    ui.hideModal();
-			                    // Вызываем метод сброса ожидания/сна, аналогично варианту без бэкапа
-			                    callAbortSleep().catch(function() {}).then(function() {
-			                        self.doBackupThenRestore(device, archive, logPre);
-			                    });
-			                }
-				}, 'Сначала бэкап, потом восстановить')
+            E('button', {
+                'class': 'cbi-button cbi-button-apply',
+                'click': function() {
+                    ui.hideModal();
+                    self.doBackupThenRestore(device, archive, logPre);
+                }
+            }, 'Сначала бэкап, потом восстановить')
         ]);
         ui.showModal('Сохранить текущее состояние?', [ body, footer ]);
     },
@@ -1849,9 +1864,9 @@ echo "==> Перезапускаю rpcd и uhttpd..."
 health_check() {
 	local fails=0
 
-	_hc_ok()   { printf "  [OK]   %s\n" "$1"; }
-	_hc_fail() { printf "  [FAIL] %s\n" "$1"; fails=$((fails + 1)); }
-	_hc_warn() { printf "  [WARN] %s\n" "$1"; }
+	_hc_ok()   { printf "${CLR_GREEN}  [OK]${CLR_RESET}    %s\n" "$1"; }
+	_hc_fail() { printf "${CLR_ORANGE}  [FAIL]${CLR_RESET}  %s\n" "$1"; fails=$((fails + 1)); }
+	_hc_warn() { printf "${CLR_YELLOW}  [WARN]${CLR_RESET}  %s\n" "$1"; }
 	_hc_skip() { printf "  [SKIP] %s\n" "$1"; }
 
 	echo ""
