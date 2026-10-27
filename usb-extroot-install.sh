@@ -1227,126 +1227,174 @@ return view.extend({
         }).catch(function(err) { ui.addNotification(null, E('p', {}, 'Ошибка запуска: ' + err), 'danger'); self._lockUI(false); });
     },
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     showUploadDialog: function(logPre) {
         var self = this;
         if (!writeToken) { ui.addNotification(null, E('p', {}, 'Загрузка архивов требует права записи (write-ACL).'), 'danger'); return; }
         
-        var fileInput = E('input', { 'type': 'file', 'accept': '.tar.gz', 'style': 'margin-bottom:10px; width:100%;' });
-        var copyCheckbox = E('input', { 'type': 'checkbox', 'id': 'upload-copy-to-usb', 'style': 'margin-right:8px;' });
-        var copyLabel = E('label', { 'for': 'upload-copy-to-usb', 'style': 'cursor:pointer;' }, 'Скопировать архив на накопитель');
-        var copyWrapper = E('div', { 'style': 'margin-top:10px; margin-bottom:10px; display:flex; align-items:center;' }, [ copyCheckbox, copyLabel ]);
+        callStatus().then(function(res) {
+            var st = unwrap(res) || {};
+            var isExtroot = (st.extroot === 'yes');
 
-        var statusText = E('p', { 'style': 'margin-top:10px; font-weight:bold;' }, '');
-        var progressBar = E('div', { 'style': 'width:100%; height:10px; background:#333; margin-top:10px; display:none;' }, [
-            E('div', { 'style': 'width:0%; height:100%; background:#32cd32; transition:width 0.2s;' })
-        ]);
+            var fileInput = E('input', { 'type': 'file', 'accept': '.tar.gz', 'style': 'margin-bottom:10px; width:100%;' });
+            
+            var copyCheckbox = E('input', { 
+                'type': 'checkbox', 
+                'id': 'upload-copy-to-usb', 
+                'style': 'margin-right:8px;',
+                'disabled': !isExtroot 
+            });
+            
+            var copyLabelText = isExtroot 
+                ? 'Скопировать архив на накопитель' 
+                : 'Скопировать архив на накопитель (недоступно: загрузка с внутренней памяти)';
+                
+            var copyLabel = E('label', { 
+                'for': 'upload-copy-to-usb', 
+                'style': 'cursor:pointer;' + (!isExtroot ? ' color:#888;' : '') 
+            }, copyLabelText);
+            
+            var copyWrapper = E('div', { 'style': 'margin-top:10px; margin-bottom:10px; display:flex; align-items:center;' }, [ copyCheckbox, copyLabel ]);
 
-        var body = E('div', {}, [
-            E('p', {}, 'Выберите файл .tar.gz (архив overlay/upper) для загрузки и немедленного восстановления:'),
-            fileInput, copyWrapper, statusText, progressBar
-        ]);
+            var statusText = E('p', { 'style': 'margin-top:10px; font-weight:bold;' }, '');
+            var progressBar = E('div', { 'style': 'width:100%; height:10px; background:#333; margin-top:10px; display:none;' }, [
+                E('div', { 'style': 'width:0%; height:100%; background:#32cd32; transition:width 0.2s;' })
+            ]);
 
-        var footer = E('div', { 'style': 'display:flex;gap:8px;justify-content:flex-end;' }, [
-            E('button', { 'class': 'cbi-button cbi-button-reset', 'click': function() { ui.hideModal(); } }, 'Закрыть'),
-            E('button', {
-                'class': 'cbi-button cbi-button-apply',
-                'click': function() {
-                    var file = fileInput.files[0];
-                    if (!file || !file.name.endsWith('.tar.gz')) {
-                        ui.addNotification(null, E('p', {}, 'Выберите .tar.gz файл.'), 'danger'); return;
-                    }
-                    var shouldCopy = copyCheckbox.checked;
-                    statusText.textContent = 'Загрузка... (' + Math.round(file.size / 1024) + ' KB)';
-                    progressBar.style.display = 'block';
-                    
-                    var xhr = new XMLHttpRequest();
-                    var uploadUrl = '/cgi-bin/usb-extroot-upload?file=' + encodeURIComponent(file.name);
-                    if (writeToken) {
-                        uploadUrl += '&token=' + encodeURIComponent(writeToken);
-                    }
-                    xhr.open('POST', uploadUrl, true);
-                    xhr.setRequestHeader('Content-Type', 'application/octet-stream');
-                    xhr.setRequestHeader('X-Extroot-Token', writeToken);
-                    
-                    xhr.upload.onprogress = function(e) {
-                        if (e.lengthComputable) {
-                            var percent = Math.round((e.loaded / e.total) * 100);
-                            progressBar.firstChild.style.width = percent + '%';
-                            statusText.textContent = 'Загрузка: ' + percent + '%';
+            var body = E('div', {}, [
+                E('p', {}, 'Выберите файл .tar.gz (архив overlay/upper) для загрузки и немедленного восстановления:'),
+                fileInput, copyWrapper, statusText, progressBar
+            ]);
+
+            var footer = E('div', { 'style': 'display:flex;gap:8px;justify-content:flex-end;' }, [
+                E('button', { 'class': 'cbi-button cbi-button-reset', 'click': function() { ui.hideModal(); } }, 'Закрыть'),
+                E('button', {
+                    'class': 'cbi-button cbi-button-apply',
+                    'click': function() {
+                        var file = fileInput.files[0];
+                        if (!file || !file.name.endsWith('.tar.gz')) {
+                            ui.addNotification(null, E('p', {}, 'Выберите .tar.gz файл.'), 'danger'); return;
                         }
-                    };
-                    
-                    xhr.onload = function() {
+                        var shouldCopy = copyCheckbox.checked && isExtroot;
+                        statusText.textContent = 'Загрузка... (' + Math.round(file.size / 1024) + ' KB)';
+                        progressBar.style.display = 'block';
                         
-							
-						                        if (xhr.status >= 200 && xhr.status < 300) {
-                            ui.hideModal();
-                            ui.addNotification(null, E('p', {}, 'Архив загружен. Выберите цель восстановления.'), 'info');
-
-                            var archiveParam = 'tmp/' + file.name;
-                            if (shouldCopy) {
-                                archiveParam = 'save_tmp/' + file.name;
+                        var xhr = new XMLHttpRequest();
+                        var uploadUrl = '/cgi-bin/usb-extroot-upload?file=' + encodeURIComponent(file.name);
+                        if (writeToken) {
+                            uploadUrl += '&token=' + encodeURIComponent(writeToken);
+                        }
+                        xhr.open('POST', uploadUrl, true);
+                        xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+                        xhr.setRequestHeader('X-Extroot-Token', writeToken);
+                        
+                        xhr.upload.onprogress = function(e) {
+                            if (e.lengthComputable) {
+                                var percent = Math.round((e.loaded / e.total) * 100);
+                                progressBar.firstChild.style.width = percent + '%';
+                                statusText.textContent = 'Загрузка: ' + percent + '%';
                             }
+                        };
+                        
+                        xhr.onload = function() {
+                            if (xhr.status >= 200 && xhr.status < 300) {
+                                ui.hideModal();
+                                ui.addNotification(null, E('p', {}, 'Архив загружен. Выберите цель восстановления.'), 'info');
 
-                            Promise.all([ callDevices(), callStatus() ]).then(function(results) {
-                                var devices = unwrap(results[0]);
-                                if (!Array.isArray(devices)) devices = [];
-                                var st = unwrap(results[1]) || {};
-
-                                var targetSelect = E('select', { 'style': 'width:100%;padding:4px;margin-bottom:10px;' }, [
-                                    E('option', { 'value': 'internal' }, 'Внутренняя память роутера (/overlay)')
-                                ]);
-                                devices.forEach(function(d) {
-                                    targetSelect.appendChild(E('option', { 'value': d.dev }, d.desc));
-                                });
-
-                                // По умолчанию — текущая загрузка: extroot → текущий диск, иначе internal
-                                if (st.extroot_dev) {
-                                    targetSelect.value = st.extroot_dev;
-                                } else {
-                                    targetSelect.value = 'internal';
+                                var archiveParam = 'tmp/' + file.name;
+                                if (shouldCopy) {
+                                    archiveParam = 'save_tmp/' + file.name;
                                 }
 
-                                var body = E('div', {}, [
-                                    E('p', { 'style': 'font-weight:bold;' }, 'Архив: ' + file.name),
-                                    E('p', {}, 'Цель восстановления:'),
-                                    targetSelect,
-                                    E('p', { 'style': 'font-size:12px; color:#888; margin-top:10px;' },
-                                        'По умолчанию — текущая загрузка. Если выбрать внешний накопитель, система после ребута загрузится с него (extroot).')
-                                ]);
+                                Promise.all([ callDevices(), callStatus() ]).then(function(results) {
+                                    var devices = unwrap(results[0]);
+                                    if (!Array.isArray(devices)) devices = [];
+                                    var st = unwrap(results[1]) || {};
 
-                                var footer = E('div', { 'style': 'display:flex;gap:8px;justify-content:flex-end;' }, [
-                                    E('button', { 'class': 'cbi-button cbi-button-reset',
-                                        'click': function() { ui.hideModal(); } }, 'Отмена'),
-                                    E('button', {
-                                        'class': 'cbi-button cbi-button-apply',
-                                        'click': function() {
-                                            var target = targetSelect.value;
-                                            if (!target) { ui.addNotification(null, E('p', {}, 'Выберите цель.'), 'danger'); return; }
-                                            ui.hideModal();
-                                            self.runOp('restore_archive', target, archiveParam, logPre);
-                                        }
-                                    }, 'Восстановить')
-                                ]);
-                                ui.showModal('Выбор цели восстановления', [ body, footer ]);
-                            });	
-							
-                        } else {
-                            statusText.textContent = 'Ошибка сервера: ' + xhr.responseText;
+                                    var targetSelect = E('select', { 'style': 'width:100%;padding:4px;margin-bottom:10px;' }, [
+                                        E('option', { 'value': 'internal' }, 'Внутренняя память роутера (/overlay)')
+                                    ]);
+                                    devices.forEach(function(d) {
+                                        targetSelect.appendChild(E('option', { 'value': d.dev }, d.desc));
+                                    });
+
+                                    // По умолчанию — текущая загрузка: extroot → текущий диск, иначе internal
+                                    if (st.extroot_dev) {
+                                        targetSelect.value = st.extroot_dev;
+                                    } else {
+                                        targetSelect.value = 'internal';
+                                    }
+
+                                    var body = E('div', {}, [
+                                        E('p', { 'style': 'font-weight:bold;' }, 'Архив: ' + file.name),
+                                        E('p', {}, 'Цель восстановления:'),
+                                        targetSelect,
+                                        E('p', { 'style': 'font-size:12px; color:#888; margin-top:10px;' },
+                                            'По умолчанию — текущая загрузка. Если выбрать внешний накопитель, система после ребута загрузится с него (extroot).')
+                                    ]);
+
+                                    var footer = E('div', { 'style': 'display:flex;gap:8px;justify-content:flex-end;' }, [
+                                        E('button', { 'class': 'cbi-button cbi-button-reset',
+                                            'click': function() { ui.hideModal(); } }, 'Отмена'),
+                                        E('button', {
+                                            'class': 'cbi-button cbi-button-apply',
+                                            'click': function() {
+                                                var target = targetSelect.value;
+                                                if (!target) { ui.addNotification(null, E('p', {}, 'Выберите цель.'), 'danger'); return; }
+                                                ui.hideModal();
+                                                self.runOp('restore_archive', target, archiveParam, logPre);
+                                            }
+                                        }, 'Восстановить')
+                                    ]);
+                                    ui.showModal('Выбор цели восстановления', [ body, footer ]);
+                                });	
+                            } else {
+                                statusText.textContent = 'Ошибка сервера: ' + xhr.responseText;
+                                statusText.style.color = '#ff5555';
+                                progressBar.firstChild.style.background = '#ff5555';
+                            }
+                        };
+                        xhr.onerror = function() {
+                            statusText.textContent = 'Ошибка сети.';
                             statusText.style.color = '#ff5555';
-                            progressBar.firstChild.style.background = '#ff5555';
-                        }
-                    };
-                    xhr.onerror = function() {
-                        statusText.textContent = 'Ошибка сети.';
-                        statusText.style.color = '#ff5555';
-                    };
-                    xhr.send(file);
-                }
-            }, 'Загрузить и восстановить')
-        ]);
-        ui.showModal('Загрузка и восстановление из архива', [ body, footer ]);
+                        };
+                        xhr.send(file);
+                    }
+                }, 'Загрузить и восстановить')
+            ]);
+            ui.showModal('Загрузка и восстановление из архива', [ body, footer ]);
+        }).catch(function(err) {
+            ui.addNotification(null, E('p', {}, 'Ошибка проверки статуса: ' + err), 'danger');
+        });
     },
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
     downloadArchive: function(relPath) {
         if (!readToken) return Promise.resolve(false);
