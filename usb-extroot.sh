@@ -8,7 +8,7 @@
 #  sh <( wget -qO- https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft/usb-extroot-install.sh )
 #  sh /usb-extroot-install.sh
 # ============================================================
-ver="v0.1.43.11-draft"
+ver="v0.1.43.10-draft"
 SRC_BASE="https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft"
 TEST_MODE=0
 
@@ -2152,17 +2152,14 @@ FSTAB_EOF
 	echo -e "${CLR_GREEN} Роутер будет перезагружен и загрузится с $RESTORE_PART.${CLR_RESET}"
 	echo -e "${CLR_GREEN}================================================================${CLR_RESET}"
 	
-	if [ "$BATCH" = "1" ]; then
-	
-		if [ -z /tmp/usb-extroot-reboot-now ]; then
-			echo
-			echo -e "${CLR_GREEN}================================================================${CLR_RESET}"
-			echo
-			echo " ОЖИДАНИЕ ПОДТВЕРЖДЕНИЯ ПЕРЕЗАГРУЗКИ ПОЛЬЗОВАТЕЛЕМ (до 10 мин)..."
-			echo
-			echo -e "${CLR_GREEN}================================================================${CLR_RESET}"
-			echo
-		fi
+	if [ "$BATCH" = "1" ]; then	
+		echo
+		echo -e "${CLR_GREEN}================================================================${CLR_RESET}"
+		echo
+		echo " ОЖИДАНИЕ ПОДТВЕРЖДЕНИЯ ПЕРЕЗАГРУЗКИ ПОЛЬЗОВАТЕЛЕМ (до 10 мин)..."
+		echo
+		echo -e "${CLR_GREEN}================================================================${CLR_RESET}"
+		echo
 		i=0
 		while [ "$i" -lt 600 ]; do
 			[ -f /tmp/usb-extroot-reboot-now ] && break
