@@ -1,6 +1,6 @@
 #!/bin/sh
 # ============================================================
-#  usb-extroot.sh  v0.1.43.10-draft
+#  usb-extroot.sh  v0.1.43.11-draft
 #  Перенос overlay OpenWrt на USB-накопитель (extroot)
 #  Лог: /tmp/usb-extroot.log
 #  Бэкап: /tmp/.usb-extroot-x7k2m9q4p1w8/
@@ -8,7 +8,7 @@
 #  sh <( wget -qO- https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft/usb-extroot-install.sh )
 #  sh /usb-extroot-install.sh
 # ============================================================
-ver="v0.1.43.10-draft"
+ver="v0.1.43.11-draft"
 SRC_BASE="https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft"
 TEST_MODE=0
 
@@ -531,7 +531,7 @@ confirm_reboot_or_die() {
 
 	if [ "$BATCH" = "1" ]; then
 		[ "$need_share_down" = "1" ] && share_down
-
+		echo 
 		echo -e "${CLR_ORANGE}############################################################${CLR_RESET}"
 		echo 
 		echo "    Перезагружаюсь..."
@@ -539,6 +539,7 @@ confirm_reboot_or_die() {
 		echo -e "    Перезапустите роутер отключив и подав питание.${CLR_RESET}"
 		echo
 		echo -e "${CLR_ORANGE}############################################################${CLR_RESET}"
+		sleep 5
 		sync
 		sleep 2
 		soft_reboot_with_fallback 40
@@ -2005,62 +2006,101 @@ if [ "$MODE" = "restore_archive" ]; then
 	if echo "$TAR_LIST" | grep -qE '^/'; then umount "$RESTORE_TARGET" 2>/dev/null; die "$CHOICE_TEXT" "Архив содержит абсолютные пути."; fi
 	if echo "$TAR_LIST" | grep -qE '(^|/)\.\.(/|$)'; then umount "$RESTORE_TARGET" 2>/dev/null; die "$CHOICE_TEXT" "Архив содержит '..' в путях."; fi
 
-	# 4. Выбор места для staging
+
+
+
+
+
+
+
+# 4. Выбор метода распаковки в соответствии с новым алгоритмом
 	CUR_DEV=$(quick_overlay_dev)
-	if [ "$RESTORE_PART" = "$CUR_DEV" ] || { [ "$RESTORE_PART" = "internal" ] && is_internal_dev "$CUR_DEV"; }; then
+	IS_ACTIVE_OR_INTERNAL=0
+	
+	if [ "$BATCH_DEVICE" = "internal" ] || [ "$RESTORE_PART" = "$CUR_DEV" ] || is_internal_dev "$CUR_DEV"; then
+		IS_ACTIVE_OR_INTERNAL=1
+	fi
+
+	if [ "$IS_ACTIVE_OR_INTERNAL" = "1" ]; then
+		# ВЕТКА А: Цель inner ИЛИ активна — работаем через ОЗУ (/tmp) как и сейчас
 		STAGING="/tmp/overlay_stage"
-		echo "      цель АКТИВНА, staging в ОЗУ"
-	else
-		STAGING=""
-		for m in $(awk '$3=="ext4" || $3=="f2fs" || $3=="btrfs" {print $2}' /proc/mounts); do
-			[ "$m" = "$RESTORE_TARGET" ] && continue
-			M_AVAIL=$(df -k "$m" 2>/dev/null | awk 'NR==2 {print $4}')
-			if [ -n "$M_AVAIL" ] && [ "$M_AVAIL" -gt "$NEED_KB" ]; then
-				STAGING="$m/.usb-extroot-staging"
-				break
-			fi
-		done
-		if [ -z "$STAGING" ]; then
-			STAGING="/tmp/overlay_stage"
-			echo "      цель НЕАКТИВНА, но свободных дисков нет, staging в ОЗУ"
-		else
-			echo "      цель НЕАКТИВНА, staging на $STAGING"
+		echo "      цель активна или internal, staging в ОЗУ"
+		
+		rm -rf "$STAGING"
+		mkdir -p "$STAGING/overlay/upper"
+
+		echo "      распаковываю архив в $STAGING ..."
+		if ! tar -xzf "$ARCHIVE_PATH" -C "$STAGING" 2>/tmp/tar_restore.err; then
+			umount "$RESTORE_TARGET" 2>/dev/null || true
+			rm -rf "$STAGING"
+			die "$CHOICE_TEXT" "Не удалось распаковать архив."
 		fi
-	fi
 
-	rm -rf "$STAGING"
-	mkdir -p "$STAGING"
+		if [ ! -d "$STAGING/overlay/upper" ]; then
+			umount "$RESTORE_TARGET" 2>/dev/null || true
+			rm -rf "$STAGING"
+			die "$CHOICE_TEXT" "В архиве нет overlay/upper."
+		fi
 
-	# 5. Распаковка
-	echo "      распаковываю архив в $STAGING ..."
-	if ! tar -xzf "$ARCHIVE_PATH" -C "$STAGING" 2>/tmp/tar_restore.err; then
-		umount "$RESTORE_TARGET" 2>/dev/null || true
+		echo "      переношу upper на Цель..."
+		rm -rf "$RESTORE_TARGET/upper"
+		mkdir -p "$RESTORE_TARGET/work"
+
+		if ! mv "$STAGING/overlay/upper" "$RESTORE_TARGET/upper" 2>/dev/null; then
+			umount "$RESTORE_TARGET" 2>/dev/null || true
+			rm -rf "$STAGING"
+			die "$CHOICE_TEXT" "Не смог переместить upper на Цель."
+		fi
 		rm -rf "$STAGING"
-		die "$CHOICE_TEXT" "Не удалось распаковать архив."
+	else
+		# ВЕТКА Б: Цель НЕ inner И неактивна — копируем архив прямо на цельный диск в корень и распаковываем
+		echo "      цель неактивна: копирую архив на цель и распаковываю на месте..."
+		
+		# Копируем архив в корень целевого накопителя
+		ARCH_NAME=$(basename "$ARCHIVE_PATH")
+		TARGET_ARCHIVE="$RESTORE_TARGET/$ARCH_NAME"
+		
+		if ! cp "$ARCHIVE_PATH" "$TARGET_ARCHIVE" 2>/dev/null; then
+			umount "$RESTORE_TARGET" 2>/dev/null || true
+			die "$CHOICE_TEXT" "Не смог скопировать архив на целевой накопитель."
+		fi
+		
+		# Создаем структуру overlay, если её нет
+		mkdir -p "$RESTORE_TARGET/overlay"
+		mkdir -p "$RESTORE_TARGET/work"
+		
+		# Распаковываем во временную папку upper.new прямо на целевом разделе
+		rm -rf "$RESTORE_TARGET/upper.new"
+		mkdir -p "$RESTORE_TARGET/upper.new"
+		
+		if ! tar -xzf "$TARGET_ARCHIVE" -C "$RESTORE_TARGET" overlay/upper 2>/tmp/tar_restore.err; then
+			rm -f "$TARGET_ARCHIVE"
+			rm -rf "$RESTORE_TARGET/upper.new"
+			umount "$RESTORE_TARGET" 2>/dev/null || true
+			die "$CHOICE_TEXT" "Не удалось распаковать архив на целевом накопителе."
+     	fi
+		
+		# Если tar распаковал в overlay/upper, переносим из overlay/upper в upper.new
+		if [ -d "$RESTORE_TARGET/overlay/upper" ]; then
+			cp -a "$RESTORE_TARGET/overlay/upper/." "$RESTORE_TARGET/upper.new/" 2>/dev/null
+			rm -rf "$RESTORE_TARGET/overlay"
+		fi
+		
+		# Удаляем временную копию архива с целевого диска
+		rm -f "$TARGET_ARCHIVE"
+		
+		if [ ! -d "$RESTORE_TARGET/upper.new/etc/config" ]; then
+			rm -rf "$RESTORE_TARGET/upper.new"
+			umount "$RESTORE_TARGET" 2>/dev/null || true
+			die "$CHOICE_TEXT" "Распакованный upper.new не содержит etc/config."
+		fi
+		
+		# Заменяем старый upper на новый
+		rm -rf "$RESTORE_TARGET/upper"
+		mv "$RESTORE_TARGET/upper.new" "$RESTORE_TARGET/upper"
+		echo -e "${CLR_GREEN}      распаковка на внешнюю неактивную цель завершена ${CLR_RESET}"
 	fi
 
-	if [ ! -d "$STAGING/overlay/upper" ]; then
-		umount "$RESTORE_TARGET" 2>/dev/null || true
-		rm -rf "$STAGING"
-		die "$CHOICE_TEXT" "В архиве нет overlay/upper."
-	fi
-
-	# 6. Деструктивная фаза
-	echo "      переношу upper на Цель..."
-	rm -rf "$RESTORE_TARGET/upper"
-	mkdir -p "$RESTORE_TARGET/work"
-
-	if ! mv "$STAGING/overlay/upper" "$RESTORE_TARGET/upper" 2>/dev/null; then
-		umount "$RESTORE_TARGET" 2>/dev/null || true
-		rm -rf "$STAGING"
-		die "$CHOICE_TEXT" "Не смог переместить upper на Цель."
-	fi
-	rm -rf "$STAGING"
-
-	if [ ! -d "$RESTORE_TARGET/upper/etc/config" ]; then
-		umount "$RESTORE_TARGET" 2>/dev/null || true
-		die "$CHOICE_TEXT" "После распаковки на Цели нет upper/etc/config."
-	fi
 
 	# 7. Настройка fstab и reboot-helper
 	if [ "$BATCH_DEVICE" = "internal" ]; then
@@ -2113,16 +2153,23 @@ FSTAB_EOF
 	echo -e "${CLR_GREEN}================================================================${CLR_RESET}"
 	
 	if [ "$BATCH" = "1" ]; then
-		echo
-		echo "ОЖИДАНИЕ ПОДТВЕРЖДЕНИЯ ПЕРЕЗАГРУЗКИ ПОЛЬЗОВАТЕЛЕМ (до 10 мин)..."
-		echo
+	
+		if [ -z /tmp/usb-extroot-reboot-now ]; then
+			echo
+			echo -e "${CLR_GREEN}================================================================${CLR_RESET}"
+			echo
+			echo " ОЖИДАНИЕ ПОДТВЕРЖДЕНИЯ ПЕРЕЗАГРУЗКИ ПОЛЬЗОВАТЕЛЕМ (до 10 мин)..."
+			echo
+			echo -e "${CLR_GREEN}================================================================${CLR_RESET}"
+			echo
+		fi
 		i=0
 		while [ "$i" -lt 600 ]; do
 			[ -f /tmp/usb-extroot-reboot-now ] && break
 			sleep 1
 			i=$((i + 1))
 		done
-		#rm -f /tmp/usb-extroot-reboot-now
+		rm -f /tmp/usb-extroot-reboot-now
 	fi
 
 	confirm_reboot_or_die 0
@@ -2953,7 +3000,7 @@ sleep 3
 		sleep 1
 		i=$((i + 1))
 	done
-	#rm -f /tmp/usb-extroot-reboot-now
+	rm -f /tmp/usb-extroot-reboot-now
 
 
 echo -e "${CLR_GREEN}================================================================${CLR_RESET}"
