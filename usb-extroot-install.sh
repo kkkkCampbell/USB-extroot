@@ -111,7 +111,7 @@ config usb-extroot 'main'
 	option autobackup_delay '300'
 	option autobackup_enabled '1'
 	option manual_rotate '50'
-	option auto_rotate '30'
+	option auto_rotate '10'
 	option read_token '$NEW_READ'
 	option write_token '$NEW_WRITE'
 UCI_EOF
