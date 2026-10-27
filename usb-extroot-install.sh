@@ -713,7 +713,13 @@ var readToken = '';
 var writeToken = '';
 
 function unwrap(res) { if (res && typeof res === 'object' && 'result' in res) return res.result; return res; }
-function cleanLog(str) { return str.replace(/\r/g, '').replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{1,4})*)?[0-9A-ORZcf-nqry=><]/g, ''); }
+function cleanLog(str) { 
+    return str
+        .replace(/\r/g, '')
+        .replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{1,4})*)?[0-9A-ORZcf-nqry=><]/g, '')
+        .replace(/\x1b\[38;2;17;17;17mEXTROOT_READY_CODE_777888\x1b\[0m/g, '') // Удаляем цветной маркер с ANSI-тегами
+        .replace(/EXTROOT_READY_CODE_777888/g, ''); // На всякий случай подчищаем чистый текст, если теги отрезались раньше
+}
 function genConfirmCode() { var n = ''; for (var i = 0; i < 4; i++) n += Math.floor(Math.random() * 10); return n; }
 
 function buildManualDownloadLink(relPath) {
@@ -1584,13 +1590,30 @@ runOp: function(mode, device, archive, logPre) {
             ui.showModal('Требуется подтверждение перезагрузки', [ body ]);
         };
 
-        pollTimer = setInterval(function() {
+
+
+
+
+
+
+
+
+
+pollTimer = setInterval(function() {
             pollTicks++;
             callLog().then(function(res) {
                 var r = unwrap(res);
                 if (r && r.chunk) {
                     logPre.textContent = cleanLog(r.chunk);
                     logPre.scrollTop = logPre.scrollHeight;
+
+                    // ---> ВСТАВЛЯТЬ ИМЕННО СЮДА <---
+                    if (!archiveDownloaded && r.chunk.indexOf('EXTROOT_READY_CODE_777888') !== -1) {
+                        archiveDownloaded = true;
+                        showDownloadModal();
+                    }
+                    // ------------------------------
+
                     if (watchManualReady && !manualDownloaded) {
                         var m = r.chunk.match(/MANUAL_ARCHIVE_READY=(\S+)/);
                         if (m) {
@@ -1609,11 +1632,19 @@ runOp: function(mode, device, archive, logPre) {
                 }
             }).catch(function() {});
 
+
+
+
+
+
+
+
+
 if (watchArchiveInfo && !archiveDownloaded && mode !== 'switch_overlay') {
                 callArchiveInfo().then(function(res) {
                     var r = unwrap(res);
                     // Добавляем режим restore_archive, чтобы он тоже триггерил модалку
-                    if (r && (r.exists === 'yes' || mode === 'restore_archive') && !archiveDownloaded) {
+                    if (r && (r.exists === 'yes') && !archiveDownloaded) {
                         archiveDownloaded = true;
                         showDownloadModal();
                     }
