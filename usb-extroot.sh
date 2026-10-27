@@ -1,6 +1,6 @@
 #!/bin/sh
 # ============================================================
-#  usb-extroot.sh  v0.1.43.14-draft
+#  usb-extroot.sh  v0.1.44.00-draft
 #  Перенос overlay OpenWrt на USB-накопитель (extroot)
 #  Лог: /tmp/usb-extroot.log
 #  Бэкап: /tmp/.usb-extroot-x7k2m9q4p1w8/
@@ -8,7 +8,7 @@
 #  sh <( wget -qO- https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft/usb-extroot-install.sh )
 #  sh /usb-extroot-install.sh
 # ============================================================
-ver="v0.1.43.14-draft"
+ver="v0.1.44.00-draft"
 SRC_BASE="https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft"
 TEST_MODE=0
 
@@ -1609,27 +1609,46 @@ fi
 #  ВЕТКА backup / backup_manual — снять снапшот /overlay/upper.
 # ============================================================
 if [ "$MODE" = "backup" ] || [ "$MODE" = "backup_manual" ]; then
-	if [ "$MODE" = "backup_manual" ]; then
-		BK_TYPE="manual"
-		BK_PREFIX="manual-backup-full_"
-		BK_ROTATE=50
-		BK_SUBDIR="manual"
-		if ! tar_is_full; then
-			echo "      устанавливаю GNU tar..."
-			$opkg_cmd $pkg_update_cmd >/dev/null 2>&1 || true
-			$opkg_cmd $pkg_install_cmd tar >/dev/null 2>&1 || true
-		fi
-	else
-		BK_TYPE="auto"
-		BK_PREFIX="auto-backup-full-"
-		BK_ROTATE=30
-		BK_SUBDIR=""
+if [ "$MODE" = "backup_manual" ]; then
+	BK_TYPE="manual"
+	BK_PREFIX="manual-backup-full_"
+	BK_ROTATE=$(uci -q get usb-extroot.main.manual_rotate 2>/dev/null)
+	[ -z "$BK_ROTATE" ] && BK_ROTATE=50
+	case "$BK_ROTATE" in ''|*[!0-9]*) BK_ROTATE=50 ;; esac
+	[ "$BK_ROTATE" -lt 5 ]  && BK_ROTATE=5
+	[ "$BK_ROTATE" -gt 50 ] && BK_ROTATE=50
+	BK_SUBDIR="manual"
+	if ! tar_is_full; then
+		echo "      устанавливаю GNU tar..."
+		$opkg_cmd $pkg_update_cmd >/dev/null 2>&1 || true
+		$opkg_cmd $pkg_install_cmd tar >/dev/null 2>&1 || true
 	fi
+else
+	BK_TYPE="auto"
+	BK_PREFIX="auto-backup-full-"
+	BK_ROTATE=$(uci -q get usb-extroot.main.auto_rotate 2>/dev/null)
+	[ -z "$BK_ROTATE" ] && BK_ROTATE=30
+	case "$BK_ROTATE" in ''|*[!0-9]*) BK_ROTATE=30 ;; esac
+	[ "$BK_ROTATE" -lt 3 ]  && BK_ROTATE=3
+	[ "$BK_ROTATE" -gt 20 ] && BK_ROTATE=20
+	BK_SUBDIR=""
+fi
 
-	if [ "$BK_TYPE" = "auto" ] && [ -f /tmp/usb-extroot-autobackup.done ]; then
+if [ "$BK_TYPE" = "auto" ]; then
+	AUTO_ENABLED=$(uci -q get usb-extroot.main.autobackup_enabled 2>/dev/null)
+	if [ "$AUTO_ENABLED" = "0" ]; then
+		echo "backup: автобэкап отключён в настройках, пропуск"
+		exit 0
+	fi
+	if [ -f /tmp/usb-extroot-autobackup.done ]; then
 		echo "backup: уже выполнялся в эту загрузку, пропуск"
 		exit 0
 	fi
+fi
+
+
+
+
 
 	if [ "$BK_TYPE" = "manual" ]; then
 		have tar || die "$CHOICE_TEXT" "tar не найден."
@@ -2929,15 +2948,27 @@ ARCHIVE_SIZE_KB=$(du -k "$BACKUP_ARCHIVE" 2>/dev/null | awk '{print $1}')
 echo "      архив: ${ARCHIVE_SIZE_KB}K"
 echo -e "${CLR_GREEN}      архив создан${CLR_RESET}"
 
-echo "      копирую архив на USB (ротация: 30 последних)..."
-mkdir -p "$MNT/usb-extroot-backups"
-if cp "$BACKUP_ARCHIVE" "$MNT/usb-extroot-backups/" 2>/dev/null; then
-    ARCH_NAME=$(basename "$BACKUP_ARCHIVE")
-    echo -e "${CLR_GREEN}      архив сохранён на USB: /usb-extroot-backups/$ARCH_NAME${CLR_RESET}"
+	MAN_ROT=$(uci -q get usb-extroot.main.manual_rotate 2>/dev/null)
+	[ -z "$MAN_ROT" ] && MAN_ROT=50
+	case "$MAN_ROT" in ''|*[!0-9]*) MAN_ROT=50 ;; esac
+	[ "$MAN_ROT" -lt 5 ]  && MAN_ROT=5
+	[ "$MAN_ROT" -gt 50 ] && MAN_ROT=50
 
-    rotate_backups "$MNT/usb-extroot-backups" 30 "backup-full-*.tar.gz"
-    rotate_backups "$MNT/usb-extroot-backups" 30 "auto-backup-full-*.tar.gz"
-    rotate_backups "$MNT/usb-extroot-backups" 30 "overlay_backup_*.tar.gz"
+	AUTO_ROT=$(uci -q get usb-extroot.main.auto_rotate 2>/dev/null)
+	[ -z "$AUTO_ROT" ] && AUTO_ROT=30
+	case "$AUTO_ROT" in ''|*[!0-9]*) AUTO_ROT=30 ;; esac
+	[ "$AUTO_ROT" -lt 3 ]  && AUTO_ROT=3
+	[ "$AUTO_ROT" -gt 20 ] && AUTO_ROT=20
+
+	echo "      копирую архив на USB (ротация: ручные=$MAN_ROT, авто=$AUTO_ROT)..."
+	mkdir -p "$MNT/usb-extroot-backups"
+	if cp "$BACKUP_ARCHIVE" "$MNT/usb-extroot-backups/" 2>/dev/null; then
+		ARCH_NAME=$(basename "$BACKUP_ARCHIVE")
+		echo -e "${CLR_GREEN}      архив сохранён на USB: /usb-extroot-backups/$ARCH_NAME${CLR_RESET}"
+
+		rotate_backups "$MNT/usb-extroot-backups" "$MAN_ROT"  "backup-full-*.tar.gz"
+		rotate_backups "$MNT/usb-extroot-backups" "$AUTO_ROT" "auto-backup-full-*.tar.gz"
+		rotate_backups "$MNT/usb-extroot-backups" "$MAN_ROT"  "overlay_backup_*.tar.gz"
     
     TOTAL_AFTER=$(ls -1 "$MNT/usb-extroot-backups"/backup-full-*.tar.gz "$MNT/usb-extroot-backups"/auto-backup-full-*.tar.gz "$MNT/usb-extroot-backups"/overlay_backup_*.tar.gz 2>/dev/null | wc -l)
 	
