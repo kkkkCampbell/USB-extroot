@@ -109,6 +109,9 @@ if [ ! -f /etc/config/usb-extroot ]; then
 	cat > /etc/config/usb-extroot <<UCI_EOF
 config usb-extroot 'main'
 	option autobackup_delay '300'
+	option autobackup_enabled '1'
+	option manual_rotate '50'
+	option auto_rotate '30'
 	option read_token '$NEW_READ'
 	option write_token '$NEW_WRITE'
 UCI_EOF
@@ -138,6 +141,27 @@ else
 		NEW_WRITE=$(gen_token)
 		[ -n "$NEW_WRITE" ] || NEW_WRITE="fixme${RANDOM}${RANDOM}${RANDOM}"
 		uci set usb-extroot.main.write_token="$NEW_WRITE" || die "uci set write_token"
+		uci commit usb-extroot || die "uci commit usb-extroot"
+	fi
+	
+	# --- миграция настроек автобэкапа и ротации ---
+	NEED_COMMIT=0
+	EX_ENABLED=$(uci -q get usb-extroot.main.autobackup_enabled 2>/dev/null)
+	if [ -z "$EX_ENABLED" ]; then
+		uci set usb-extroot.main.autobackup_enabled='1' || die "uci set autobackup_enabled"
+		NEED_COMMIT=1
+	fi
+	EX_MAN=$(uci -q get usb-extroot.main.manual_rotate 2>/dev/null)
+	if [ -z "$EX_MAN" ]; then
+		uci set usb-extroot.main.manual_rotate='50' || die "uci set manual_rotate"
+		NEED_COMMIT=1
+	fi
+	EX_AUTO=$(uci -q get usb-extroot.main.auto_rotate 2>/dev/null)
+	if [ -z "$EX_AUTO" ]; then
+		uci set usb-extroot.main.auto_rotate='10' || die "uci set auto_rotate"
+		NEED_COMMIT=1
+	fi
+	if [ "$NEED_COMMIT" = "1" ]; then
 		uci commit usb-extroot || die "uci commit usb-extroot"
 	fi
 fi
@@ -424,6 +448,47 @@ method_backup_sources() {
     printf '] }\n'
 }
 
+method_get_settings() {
+    local enabled manual auto
+    enabled=$(uci -q get usb-extroot.main.autobackup_enabled 2>/dev/null)
+    [ -z "$enabled" ] && enabled=1
+    manual=$(uci -q get usb-extroot.main.manual_rotate 2>/dev/null)
+    [ -z "$manual" ] && manual=50
+    auto=$(uci -q get usb-extroot.main.auto_rotate 2>/dev/null)
+    [ -z "$auto" ] && auto=30
+    printf '{ "result": { "autobackup_enabled": '
+    printf '%s' "$enabled" | esc_json
+    printf ', "manual_rotate": '
+    printf '%s' "$manual" | esc_json
+    printf ', "auto_rotate": '
+    printf '%s' "$auto" | esc_json
+    printf ' } }\n'
+}
+
+method_save_settings() {
+    local params enabled manual auto
+    params=$(cat)
+    enabled=$(echo "$params" | jsonfilter -e '@.autobackup_enabled' 2>/dev/null)
+    manual=$(echo "$params" | jsonfilter -e '@.manual_rotate' 2>/dev/null)
+    auto=$(echo "$params" | jsonfilter -e '@.auto_rotate' 2>/dev/null)
+
+    case "$enabled" in 0|1) ;; *) enabled=1 ;; esac
+    case "$manual" in ''|*[!0-9]*) manual=50 ;; esac
+    [ "$manual" -lt 5 ]  && manual=5
+    [ "$manual" -gt 50 ] && manual=50
+    case "$auto" in ''|*[!0-9]*) auto=30 ;; esac
+    [ "$auto" -lt 3 ]  && auto=3
+    [ "$auto" -gt 20 ] && auto=20
+
+    uci set usb-extroot.main.autobackup_enabled="$enabled"
+    uci set usb-extroot.main.manual_rotate="$manual"
+    uci set usb-extroot.main.auto_rotate="$auto"
+    uci commit usb-extroot
+
+    printf '{ "result": { "ok": true, "autobackup_enabled": "%s", "manual_rotate": "%s", "auto_rotate": "%s" } }\n' \
+        "$enabled" "$manual" "$auto"
+}
+
 method_archive_info() {
     local out
     out=$(run_script_action archive-info)
@@ -518,20 +583,6 @@ method_run() {
         *) _fail "invalid mode '$mode'"; return ;;
     esac
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     case "$mode" in
         format|noformat|restore_archive|switch_overlay)
             if [ -z "$device" ]; then
@@ -551,18 +602,6 @@ method_run() {
             fi
             ;;
     esac
-
-
-
-
-
-
-
-
-
-
-
-
 
     case "$mode" in
         format|noformat|switch_overlay)
@@ -610,11 +649,13 @@ method_run() {
 
 case "$1" in
     list)
-        echo '{ "status": {}, "devices": {}, "switch_targets": {}, "log": { "offset": 0 }, "archive_info": {}, "archive_list": {}, "backup_sources": {}, "version": {}, "api_read_token": {}, "api_write_token": {}, "abort_sleep": {}, "run": { "params": {} } }'
+        echo '{ "status": {}, "devices": {}, "switch_targets": {}, "log": { "offset": 0 }, "archive_info": {}, "archive_list": {}, "backup_sources": {}, "version": {}, "api_read_token": {}, "api_write_token": {}, "abort_sleep": {}, "run": { "params": {} }, "get_settings": {}, "save_settings": { "params": {} } }'
         ;;
     call)
         method="$2"
         case "$method" in
+            get_settings)    method_get_settings ;;
+            save_settings)   method_save_settings ;;
             status)          method_status ;;
             devices)         method_devices ;;
             switch_targets)  method_switch_targets ;;
@@ -649,13 +690,13 @@ cat > "$BASE_DIR/acl.json" <<'ACL_EOF'
             "ubus": {
                 "luci.usb-extroot": [
                     "status", "devices", "switch_targets", "log", "archive_info", "archive_list", "backup_sources",
-                    "version", "api_read_token"
+                    "version", "api_read_token", "get_settings"
                 ]
             }
         },
         "write": {
             "ubus": {
-                "luci.usb-extroot": [ "run", "api_write_token", "abort_sleep" ]
+                "luci.usb-extroot": [ "run", "api_write_token", "abort_sleep", "save_settings" ]
             }
         }
     }
@@ -707,6 +748,9 @@ var callApiReadToken = rpc.declare({ object: 'luci.usb-extroot', method: 'api_re
 var callApiWriteToken = rpc.declare({ object: 'luci.usb-extroot', method: 'api_write_token' });
 var callAbortSleep = rpc.declare({ object: 'luci.usb-extroot', method: 'abort_sleep' });
 var callRun = rpc.declare({ object: 'luci.usb-extroot', method: 'run', params: [ 'mode', 'device', 'archive', 'confirm' ] });
+var callGetSettings  = rpc.declare({ object: 'luci.usb-extroot', method: 'get_settings' });
+var callSaveSettings = rpc.declare({ object: 'luci.usb-extroot', method: 'save_settings',
+                                     params: [ 'autobackup_enabled', 'manual_rotate', 'auto_rotate' ] });
 
 var pollTimer = null;
 var readToken = '';
@@ -1035,9 +1079,20 @@ return view.extend({
             ])
         ]);
 
+        var btnSettings = E('button', {
+            'class': 'cbi-button cbi-button-action',
+            'id': 'btn-settings',
+            'click': function() { self.showSettingsDialog(); }
+        }, '⚙️ Настройки');
+
         return E([], [
-            E('h2', {}, ['USB extroot',
-                ver ? E('span', { 'style': 'margin-left:12px;font-size:14px;font-weight:normal;color:#888;' }, ver) : ''
+            E('div', {
+                'style': 'display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:10px;'
+            }, [
+                E('h2', { 'style': 'margin:0;' }, ['USB extroot',
+                    ver ? E('span', { 'style': 'margin-left:12px;font-size:14px;font-weight:normal;color:#888;' }, ver) : ''
+                ]),
+                btnSettings
             ]),
             E('p', {}, 'Перенос overlay OpenWrt на USB-накопитель и управление загрузкой.'),
             controls,
@@ -1047,16 +1102,85 @@ return view.extend({
         ]);
     },
 
+    showSettingsDialog: function() {
+        var self = this;
+        if (!writeToken) {
+            ui.addNotification(null, E('p', {}, 'Настройки требуют права записи (write-ACL).'), 'danger');
+            return;
+        }
 
+        callGetSettings().then(function(res) {
+            var r = unwrap(res) || {};
+            var enabledVal = String(r.autobackup_enabled == null ? '1' : r.autobackup_enabled);
+            var manualVal  = parseInt(r.manual_rotate, 10); if (isNaN(manualVal))  manualVal = 50;
+            var autoVal    = parseInt(r.auto_rotate, 10);   if (isNaN(autoVal))    autoVal   = 30;
 
+            var enableCheckbox = E('input', {
+                'type': 'checkbox',
+                'id': 'usb-extroot-settings-autobackup',
+                'checked': (enabledVal === '1') ? true : null
+            });
+            var manualInput = E('input', {
+                'type': 'number', 'min': '5', 'max': '50',
+                'value': String(manualVal), 'style': 'width:90px;'
+            });
+            var autoInput = E('input', {
+                'type': 'number', 'min': '3', 'max': '20',
+                'value': String(autoVal), 'style': 'width:90px;'
+            });
 
+            var body = E('div', {}, [
+                E('div', { 'style': 'margin-bottom:18px; display:flex; align-items:center; gap:10px;' }, [
+                    enableCheckbox,
+                    E('label', {
+                        'for': 'usb-extroot-settings-autobackup',
+                        'style': 'cursor:pointer; font-weight:bold;'
+                    }, 'Автобэкап при загрузке (вкл/выкл)')
+                ]),
+                E('div', { 'style': 'margin-bottom:12px; display:flex; align-items:center; gap:10px;' }, [
+                    E('label', { 'style': 'min-width:280px;' }, 'Ротация ручных архивов (5–50):'),
+                    manualInput
+                ]),
+                E('div', { 'style': 'margin-bottom:12px; display:flex; align-items:center; gap:10px;' }, [
+                    E('label', { 'style': 'min-width:280px;' }, 'Ротация автобэкапа (3–20):'),
+                    autoInput
+                ])
+            ]);
 
+            var footer = E('div', { 'style': 'display:flex; gap:8px; justify-content:flex-end;' }, [
+                E('button', {
+                    'class': 'cbi-button cbi-button-reset',
+                    'click': function() { ui.hideModal(); }
+                }, 'Отмена'),
+                E('button', {
+                    'class': 'cbi-button cbi-button-apply',
+                    'click': function() {
+                        var m = parseInt(manualInput.value, 10);
+                        var a = parseInt(autoInput.value, 10);
+                        if (isNaN(m) || m < 5 || m > 50) {
+                            ui.addNotification(null, E('p', {}, 'Ротация ручных архивов: допустимо 5–50.'), 'danger');
+                            return;
+                        }
+                        if (isNaN(a) || a < 3 || a > 20) {
+                            ui.addNotification(null, E('p', {}, 'Ротация автобэкапа: допустимо 3–20.'), 'danger');
+                            return;
+                        }
+                        var en = enableCheckbox.checked ? '1' : '0';
+                        callSaveSettings(en, m, a).then(function() {
+                            ui.hideModal();
+                            ui.addNotification(null, E('p', {}, 'Настройки сохранены.'), 'info');
+                        }).catch(function(err) {
+                            ui.addNotification(null, E('p', {}, 'Ошибка сохранения: ' + err), 'danger');
+                        });
+                    }
+                }, 'Сохранить')
+            ]);
 
-
-
-
-
-
+            ui.showModal('Настройки USB extroot', [ body, footer ]);
+        }).catch(function(err) {
+            ui.addNotification(null, E('p', {}, 'Не удалось получить настройки: ' + err), 'danger');
+        });
+    },
 
     showBackupSourceDialog: function(logPre) {
         var self = this;
@@ -1102,17 +1226,6 @@ return view.extend({
             self.startPolling(logPre, 'backup_manual');
         }).catch(function(err) { ui.addNotification(null, E('p', {}, 'Ошибка запуска: ' + err), 'danger'); self._lockUI(false); });
     },
-
-
-
-
-
-
-
-
-
-
-
 
     showUploadDialog: function(logPre) {
         var self = this;
@@ -1850,6 +1963,8 @@ STOP=10
 
 start() {
     [ -x /opt/usb-extroot/usb-extroot.sh ] || return 0
+    local enabled=$(uci -q get usb-extroot.main.autobackup_enabled 2>/dev/null)
+    [ "$enabled" = "0" ] && return 0
     local ovmnt ovdev parent
     ovmnt=$(awk '$2=="/overlay" {print $2; exit}' /proc/mounts)
     [ -z "$ovmnt" ] && return 0
@@ -2010,4 +2125,4 @@ health_check() {
 }
 
 health_check
-exit $? 
+exit $?
