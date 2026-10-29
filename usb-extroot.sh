@@ -1,6 +1,6 @@
 #!/bin/sh
 # ============================================================
-#  usb-extroot.sh  v0.1.44.00-draft
+#  usb-extroot.sh  v0.1.44.27-draft
 #  Перенос overlay OpenWrt на USB-накопитель (extroot)
 #  Лог: /tmp/usb-extroot.log
 #  Бэкап: /tmp/.usb-extroot-x7k2m9q4p1w8/
@@ -8,9 +8,23 @@
 #  sh <( wget -qO- https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft/usb-extroot-install.sh )
 #  sh /usb-extroot-install.sh
 # ============================================================
-ver="v0.1.44.00-draft"
+ver="v0.1.44.27-draft"
 SRC_BASE="https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft"
 TEST_MODE=0
+# ------------------------------------------------------------
+#  Коэффициенты для оценки размера upper на цели (в процентах от базы)
+# ------------------------------------------------------------
+# EST_UBIFS_PCT:  цель на ubifs (внутренний UBI). База — размер архива.
+#                 ubifs сжимает данные, размер upper ≈ размер архива * 1.2.
+#                 Используется и в грубой предварительной проверке (по архиву),
+#                 и в точной проверке после распаковки staging.
+# EST_OTHER_PCT:  цель на любой другой ФС (ext4/f2fs/vfat/btrfs/xfs). База — размер
+#                 распакованного upper в tmpfs. Метаданные + разница между сжатым
+#                 и несжатым представлением ≈ 1.1.
+EST_UBIFS_PCT=120
+EST_OTHER_PCT=110
+
+
 
 # ------------------------------------------------------------
 #  0. ОБЩИЕ ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ (РЕЮЗИНГ КОДА)
@@ -255,7 +269,32 @@ PKG_REPAIR_Y_STAT=""
 PKG_REPAIR_DNS_CHANGED=0
 PKG_REPAIR_SVC_STOPPED=0
 
+
+
+# Универсальный вызов tar: проверяет в моменте, работает ли tar в PATH.
+# Если сломан — берёт /rom/bin/tar (busybox, всегда доступен из squashfs).
+# Если позже будет установлен рабочий GNU tar — он и будет использоваться.
+
+
+
+run_tar() {
+	if tar cf /dev/null /dev/null 2>/dev/null; then
+		tar "$@"
+	elif [ -x /rom/bin/tar ]; then
+		/rom/bin/tar "$@"
+	else
+		return 127
+	fi
+}
+
+
+
 have() { command -v "$1" >/dev/null 2>&1; }
+
+
+
+
+
 
 get_backup_name() {
 	local ts=$(date +%Y-%m-%d_%H.%M)
@@ -905,6 +944,11 @@ pkg_ensure() {
 	return 0
 }
 
+
+
+
+
+
 stage0_deps() {
 	local mode="${1:-install}"
 
@@ -913,20 +957,65 @@ stage0_deps() {
 	echo "$STAGE0 ..."
 	echo "      менеджер пакетов: $opkg_cmd"
 
+	# Проверяем tar ДО установки зависимостей.
+	# Проверка через реальный запуск, а не через command -v:
+	# висячий симлинк /bin/tar -> /usr/libexec/tar-gnu тоже находится через
+	# command -v, но не работает. А run_tar умеет взять /rom/bin/tar как fallback.
+	if ! tar cf /dev/null /dev/null 2>/dev/null && [ ! -x /rom/bin/tar ]; then
+		die "$STAGE0" "tar не работает: ни в PATH, ни /rom/bin/tar.
+
+	Восстановление и бэкап без tar невозможны.
+	Проверьте вручную:
+	  which tar
+	  ls -la /bin/tar /usr/bin/tar /rom/bin/tar
+	  readlink -f \$(which tar)
+	  tar --version
+	  /rom/bin/tar --version
+
+	Если /bin/tar — висячий симлинк на битый /usr/libexec/tar-gnu:
+	  rm -f /bin/tar /usr/bin/tar
+	После этого /rom/bin/tar снова станет доступен через PATH,
+	либо fallback в run_tar сработает прямо сейчас."
+	fi
+
 	if ! pkg_ensure; then
 		if [ "$mode" = "check" ]; then
 			echo -e "${CLR_ORANGE}      часть зависимостей недоступна — продолжаю${CLR_RESET}"
-			return 0
-		fi
-		die "$STAGE0" "Зависимости отсутствуют.
+		else
+			die "$STAGE0" "Зависимости отсутствуют.
 
 	Проверь вручную:
 	  $opkg_cmd $pkg_update_cmd
 	  $opkg_cmd $pkg_install_cmd $WANT_PKGS"
+		fi
 	fi
-	echo -e "${CLR_GREEN}      tar: $(tar --version 2>&1 | head -1)${CLR_RESET}"
+
+	# Финальная верификация tar: apk в процессе установки мог снова поставить
+	# битый /bin/tar и сломать busybox. run_tar всё равно сработает через /rom/bin/tar.
+	if ! tar cf /dev/null /dev/null 2>/dev/null && [ ! -x /rom/bin/tar ]; then
+		die "$STAGE0" "tar не работает после установки зависимостей: ни в PATH, ни /rom/bin/tar.
+
+	Проверьте вручную:
+	  ls -la /bin/tar /usr/bin/tar /rom/bin/tar
+	  readlink -f \$(which tar)
+	  tar --version
+	  /rom/bin/tar --version"
+	fi
+
+	# Диагностика: какой tar реально будет использоваться
+	if tar cf /dev/null /dev/null 2>/dev/null; then
+		echo -e "${CLR_GREEN}      tar (PATH): доступен${CLR_RESET}"
+	elif [ -x /rom/bin/tar ]; then
+		echo -e "${CLR_ORANGE}      tar в PATH не работает, использую /rom/bin/tar (busybox)${CLR_RESET}"
+	fi
 	echo -e "${CLR_GREEN}      зависимости на месте${CLR_RESET}"
 }
+
+
+
+
+
+
 
 stage1_overlay() {
 	echo
@@ -1163,19 +1252,6 @@ if [ "$BATCH" = "1" ] && [ -n "$BATCH_ACTION" ]; then
 			exit 0
 			;;
 
-
-
-
-
-
-
-
-
-
-
-
-
-
 		switch-targets)
 			ensure_dependencies
 			if command -v switch_overlay_scan_targets >/dev/null 2>&1; then
@@ -1240,15 +1316,18 @@ if [ "$BATCH" = "1" ] && [ -n "$BATCH_ACTION" ]; then
 				echo "tmp/$(basename "$f")|$size"
 			done
 
-			for f in $(ls -t $(find /tmp/.usb-extroot-* /overlay/usb-extroot-backups /mnt/*/usb-extroot-backups -type f -name "*.tar.gz" 2>/dev/null) 2>/dev/null); do
-				[ -f "$f" ] || continue
-				size=$(ls -l "$f" 2>/dev/null | awk '{print $5}')
-				size=${size:-0}
-				case "$f" in
-					*/manual/*) echo "manual/$(basename "$f")|$size" ;;
-					*)          echo "$(basename "$f")|$size" ;;
-				esac
-			done
+			FOUND_ARCHIVES=$(find /tmp/.usb-extroot-* /overlay/usb-extroot-backups /mnt/*/usb-extroot-backups -type f -name "*.tar.gz" 2>/dev/null)
+			if [ -n "$FOUND_ARCHIVES" ]; then
+				for f in $(ls -t $FOUND_ARCHIVES 2>/dev/null); do
+					[ -f "$f" ] || continue
+					size=$(ls -l "$f" 2>/dev/null | awk '{print $5}')
+					size=${size:-0}
+					case "$f" in
+						*/manual/*) echo "manual/$(basename "$f")|$size" ;;
+						*)          echo "$(basename "$f")|$size" ;;
+					esac
+				done
+			fi
 			exit 0
 			;;
 	esac
@@ -1646,30 +1725,10 @@ if [ "$BK_TYPE" = "auto" ]; then
 	fi
 fi
 
-
-
-
-
 	if [ "$BK_TYPE" = "manual" ]; then
 		have tar || die "$CHOICE_TEXT" "tar не найден."
 		have uci || die "$CHOICE_TEXT" "uci не найден."
 	fi
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 	if [ -n "$BATCH_DEVICE" ]; then
 		if [ "$BATCH_DEVICE" = "active" ]; then
@@ -1685,8 +1744,6 @@ fi
 	else
 		BK_OVERLAY_DEV=$(quick_overlay_dev)
 	fi
-
-
 
 	if [ -z "$BK_OVERLAY_DEV" ]; then
 		if [ "$BK_TYPE" = "manual" ]; then
@@ -1705,16 +1762,6 @@ fi
 			exit 0
 		fi
 	fi
-
-
-
-
-
-
-
-
-
-
 
 	BK_MNT=$(awk -v p="$BK_OVERLAY_DEV" '$1==p {print $2; exit}' /proc/mounts)
 	BK_NEED_UMOUNT=0
@@ -1813,21 +1860,15 @@ fi
 	echo "      upper: ${BK_UPPER_KB}K, свободно: ${BK_AVAIL_KB}K"
 	echo "      создаю $BK_FILE ..."
 
-	# Всегда архивируем ИМЕННО $BK_MNT/upper с префиксом overlay/upper/,
-	# чтобы restore_archive мог развернуть архив.
-	# Активный overlay: $BK_MNT обычно /overlay → tar -C / overlay/upper.
-	# Неактивный / временно смонтированный: tar из $BK_MNT с transform.
 	TAR_OK=0
 	if [ "$BK_OVERLAY_DEV" = "$CUR_ACTIVE_DEV" ] && [ "$BK_MNT" = "$(get_current_overlay)" ]; then
 		if tar -C / -czf "$BK_PART_FILE" --exclude=overlay/upper/tmp overlay/upper 2>/tmp/usb-extroot-bk.err; then
 			TAR_OK=1
 		fi
 	else
-		# GNU tar (для manual уже пытаемся поставить) поддерживает --transform
 		if tar -C "$BK_MNT" --transform='s|^upper|overlay/upper|' -czf "$BK_PART_FILE" --exclude='upper/tmp' upper 2>/tmp/usb-extroot-bk.err; then
 			TAR_OK=1
 		else
-			# fallback без --transform: через временный stage со symlink
 			STAGE_TMP=$(mktemp -d /tmp/.usb-extroot-bkstage.XXXXXX 2>/dev/null) || STAGE_TMP=""
 			if [ -n "$STAGE_TMP" ]; then
 				mkdir -p "$STAGE_TMP/overlay"
@@ -1900,52 +1941,19 @@ fi
 	exit 0
 fi
 
-
-
-
-
-
-
-
-
-
-
-
 # ============================================================
 #  ВЕТКА restore_archive — развернуть архив на указанную флешку.
 # ============================================================
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 if [ "$MODE" = "restore_archive" ]; then
 	stage0_deps check
 
 	ARCHIVE_PATH=""
 	if [ "${BATCH_ARCHIVE#tmp/}" != "$BATCH_ARCHIVE" ]; then
 		ARCHIVE_PATH="/tmp/${BATCH_ARCHIVE#tmp/}"
+	elif [ -f "/overlay/usb-extroot-backups/$BATCH_ARCHIVE" ]; then
+		ARCHIVE_PATH="/overlay/usb-extroot-backups/$BATCH_ARCHIVE"
 	fi
+	
 	if [ -z "$ARCHIVE_PATH" ]; then
 		for mnt in $(awk '$3=="ext4" || $3=="f2fs" || $3=="btrfs" {print $2}' /proc/mounts); do
 			candidate="$mnt/usb-extroot-backups/$BATCH_ARCHIVE"
@@ -1995,10 +2003,21 @@ if [ "$MODE" = "restore_archive" ]; then
 		echo "      цель: $RESTORE_PART (внешний накопитель)"
 	fi
 
-	# 2. Оценка свободного места ДО любых действий
-	ARCHIVE_BYTES=$(wc -c < "$ARCHIVE_PATH" 2>/dev/null | tr -d ' ')
-	ARCHIVE_KB=$(( (ARCHIVE_BYTES + 1023) / 1024 ))
-	NEED_KB=$(( ARCHIVE_KB + ARCHIVE_KB * 15 / 100 )) # Коэффициент 1.15
+
+
+
+
+
+
+
+
+
+	# 2. Грубая предварительная оценка свободного места по размеру архива.
+	#    Не заменяет точную проверку в блоке #4, но отсеивает заведомо провальные
+	#    случаи без распаковки staging в ОЗУ (экономит RAM и время).
+	ARCHIVE_KB=$(du -k "$ARCHIVE_PATH" 2>/dev/null | awk '{print $1}')
+	[ -z "$ARCHIVE_KB" ] && ARCHIVE_KB=0
+	NEED_PRE_KB=$(( ARCHIVE_KB * EST_UBIFS_PCT / 100 ))
 
 	AVAIL_KB=$(df -k "$RESTORE_TARGET" 2>/dev/null | awk 'NR==2 {print $4}')
 	TARGET_UPPER_KB=0
@@ -2007,118 +2026,352 @@ if [ "$MODE" = "restore_archive" ]; then
 	fi
 	TOTAL_AVAIL_KB=$(( AVAIL_KB + TARGET_UPPER_KB ))
 
-	echo "      оценка: архив ${ARCHIVE_KB}K (с запасом ${NEED_KB}K), свободно на Цели: ${AVAIL_KB}K, upper на Цели: ${TARGET_UPPER_KB}K"
-	if [ "$TOTAL_AVAIL_KB" -lt "$NEED_KB" ]; then
+	echo "      грубая оценка: архив ${ARCHIVE_KB}K, порог для отсева ${NEED_PRE_KB}K, доступно (свободно+upper): ${TOTAL_AVAIL_KB}K"
+	if [ "$TOTAL_AVAIL_KB" -lt "$NEED_PRE_KB" ]; then
 		umount "$RESTORE_TARGET" 2>/dev/null || true
-		die "$CHOICE_TEXT" "Недостаточно места на Цели.
+		die "$CHOICE_TEXT" "Заведомо недостаточно места на Цели (по размеру архива).
 	Доступно (свободно + upper): ${TOTAL_AVAIL_KB}K
-	Требуется (архив + 15%):      ${NEED_KB}K"
+	Грубая оценка (архив * ${EST_UBIFS_PCT}%): ${NEED_PRE_KB}K"
 	fi
-	echo -e "${CLR_GREEN}      места достаточно (по размеру архива)${CLR_RESET}"
+	echo -e "${CLR_GREEN}      грубая оценка пройдена${CLR_RESET}"
+
+
+
+
 
 	# 3. Проверка безопасности архива
-	if ! tar -tzf "$ARCHIVE_PATH" 2>/dev/null | grep -q '^overlay/upper/etc/config/'; then
+	if ! tar cf /dev/null /dev/null 2>/dev/null && [ ! -x /rom/bin/tar ]; then
 		umount "$RESTORE_TARGET" 2>/dev/null || true
-		die "$CHOICE_TEXT" "Это не бэкап overlay. В архиве нет пути overlay/upper/etc/config/."
+		die "$CHOICE_TEXT" "tar не работает: ни в PATH, ни /rom/bin/tar."
 	fi
-	TAR_LIST=$(tar -tzf "$ARCHIVE_PATH" 2>/dev/null) || { umount "$RESTORE_TARGET" 2>/dev/null; die "$CHOICE_TEXT" "Не читается tar."; }
+	if ! run_tar -tzf "$ARCHIVE_PATH" 2>/dev/null | grep -q '^overlay/upper/etc/config/'; then
+		umount "$RESTORE_TARGET" 2>/dev/null || true
+		die "$CHOICE_TEXT" "Это не бэкап overlay. В архиве нет пути overlay/upper/etc/config/.
+	Проверьте вручную:
+	  tar -tzf $ARCHIVE_PATH | head -20"
+	fi
+	TAR_LIST=$(run_tar -tzf "$ARCHIVE_PATH" 2>/dev/null) || { umount "$RESTORE_TARGET" 2>/dev/null; die "$CHOICE_TEXT" "Не читается tar."; }
 	if echo "$TAR_LIST" | grep -qE '^/'; then umount "$RESTORE_TARGET" 2>/dev/null; die "$CHOICE_TEXT" "Архив содержит абсолютные пути."; fi
 	if echo "$TAR_LIST" | grep -qE '(^|/)\.\.(/|$)'; then umount "$RESTORE_TARGET" 2>/dev/null; die "$CHOICE_TEXT" "Архив содержит '..' в путях."; fi
 
 
+if [ "$BATCH_DEVICE" = "internal" ] && [ "$RESTORE_TARGET" = "/overlay" ] && is_internal_dev "$(quick_overlay_dev)"; then
+    echo
+    echo "      ---> освобождаю место в /overlay: удаляю юзерские пакеты > 1 MiB ---"
 
+    # ==========================================================
+    #  Встроенный user-pkgs-clean: принудительно, без подтверждений.
+    #  Срабатывает только в ветке "загружены с internal → восстанавливаем
+    #  на internal". В extroot→internal и →external этот if не входит.
+    # ==========================================================
+    _upc_rom_db="/rom/lib/apk/db/installed"
+    _upc_cur_db="/lib/apk/db/installed"
+    _upc_limit=$((1024 * 1024))
 
+    if [ ! -f "$_upc_rom_db" ]; then
+        echo "        [skip] нет $_upc_rom_db"
+    elif [ ! -f "$_upc_cur_db" ]; then
+        echo "        [skip] нет $_upc_cur_db"
+    elif ! have apk; then
+        echo "        [skip] apk не найден"
+    else
+        awk '/^P:/ { p = substr($0, 3); if (p != "") print p }' "$_upc_rom_db" | sort -u > /tmp/.upc-rom.pkgs
+        awk '/^P:/ { p = substr($0, 3); if (p != "") print p }' "$_upc_cur_db" | sort -u > /tmp/.upc-cur.pkgs
+        grep -vxFf /tmp/.upc-rom.pkgs /tmp/.upc-cur.pkgs > /tmp/.upc-user.pkgs || :
 
+        : > /tmp/.upc-to-remove.pkgs
+        awk -v limit="$_upc_limit" -v out="/tmp/.upc-to-remove.pkgs" '
+            FNR == NR { user[$0] = 1; next }
+            /^P:/ { pkg = substr($0, 3); cur = (pkg in user); next }
+            cur && /^I:/ { sz = substr($0, 3) + 0; pkgs[pkg] = sz; cur = 0; next }
+            cur && /^$/ { cur = 0 }
+            END {
+                n = 0; for (p in pkgs) keys[++n] = p
+                for (i = 1; i <= n; i++)
+                    for (j = i + 1; j <= n; j++)
+                        if (pkgs[keys[j]] > pkgs[keys[i]]) {
+                            t = keys[i]; keys[i] = keys[j]; keys[j] = t
+                        }
+                for (i = 1; i <= n; i++) {
+                    p = keys[i]; s = pkgs[p]
+                    if      (s < 1024)    ss = sprintf("%d B", s)
+                    else if (s < 1048576) ss = sprintf("%.1f KiB", s / 1024)
+                    else                  ss = sprintf("%.2f MiB", s / 1048576)
+                    mark = (s > limit) ? "  >1MiB" : ""
+                    printf "        %-42s %10s%s\n", p, ss, mark
+                    if (s > limit) print p > out
+                }
+                close(out)
+            }
+        ' /tmp/.upc-user.pkgs "$_upc_cur_db"
 
+        if [ -s /tmp/.upc-to-remove.pkgs ]; then
+            _upc_n=$(wc -l < /tmp/.upc-to-remove.pkgs)
+            echo "        кандидатов на удаление: $_upc_n"
+            # shellcheck disable=SC2046
+            if apk del --simulate $(cat /tmp/.upc-to-remove.pkgs) >/dev/null 2>&1; then
+                # shellcheck disable=SC2046
+                if apk del $(cat /tmp/.upc-to-remove.pkgs) >/dev/null 2>&1; then
+                    echo "        [OK] удалено $_upc_n пакет(ов)"
+                else
+                    echo "        [WARN] apk del завершился с ошибкой, продолжаю"
+                fi
+            else
+                echo "        [WARN] apk del --simulate отказал (зависимости?), пропускаю удаление"
+            fi
+        else
+            echo "        пакетов > 1 MiB нет, удалять нечего"
+        fi
 
+        rm -f /tmp/.upc-rom.pkgs /tmp/.upc-cur.pkgs /tmp/.upc-user.pkgs /tmp/.upc-to-remove.pkgs
+    fi
 
-# 4. Выбор метода распаковки в соответствии с новым алгоритмом
-	CUR_DEV=$(quick_overlay_dev)
-	IS_ACTIVE_OR_INTERNAL=0
+    sync
+    sleep 2
+fi
+
 	
-	if [ "$BATCH_DEVICE" = "internal" ] || [ "$RESTORE_PART" = "$CUR_DEV" ] || is_internal_dev "$CUR_DEV"; then
-		IS_ACTIVE_OR_INTERNAL=1
+# ═══════════════════════════════════════════════════════════════════
+#  Освобождение места перед восстановлением на live-internal.
+#  Срабатывает только в ветке "загружены с internal → восстанавливаем
+#  на internal" (маркер: RESTORE_TARGET="/overlay").
+#  Подтверждение пользователь уже дал (--confirm=yes + код в UI).
+# ═══════════════════════════════════════════════════════════════════
+if [ "$RESTORE_TARGET" = "/overlay" ] && [ -x /usr/local/sbin/user-pkgs-clean.sh ]; then
+    echo
+    echo "      ---> освобождаю место в /overlay: удаляю большие пакеты > 1 MiB ---"
+    if /usr/local/sbin/user-pkgs-clean.sh --force > /tmp/.pkg-clean-out.$$ 2>&1; then
+        sed 's/^/        /' /tmp/.pkg-clean-out.$$
+    else
+        _pkg_rc=$?
+        echo "      ---> удаление пакетов не удалось (код $_pkg_rc), продолжаю без освобождения" >&2
+        sed 's/^/        /' /tmp/.pkg-clean-out.$$
+    fi
+    rm -f /tmp/.pkg-clean-out.$$
+    sync
+    sleep 2
+fi
+	
+
+
+
+# 4. Staging в ОЗУ (всегда) + выбор метода по ФС и реальному размеру
+	STAGING="/tmp/overlay_stage"
+	echo "      распаковываю архив в ОЗУ ($STAGING)..."
+	rm -rf "$STAGING"
+	mkdir -p "$STAGING/overlay/upper"
+
+	if ! run_tar -xzf "$ARCHIVE_PATH" -C "$STAGING" 2>/tmp/tar_restore.err; then
+		umount "$RESTORE_TARGET" 2>/dev/null || true
+		rm -rf "$STAGING"
+		die "$CHOICE_TEXT" "Не удалось распаковать архив."
 	fi
 
-	if [ "$IS_ACTIVE_OR_INTERNAL" = "1" ]; then
-		# ВЕТКА А: Цель inner ИЛИ активна — работаем через ОЗУ (/tmp) как и сейчас
-		STAGING="/tmp/overlay_stage"
-		echo "      цель активна или internal, staging в ОЗУ"
-		
+	if [ ! -d "$STAGING/overlay/upper" ]; then
+		umount "$RESTORE_TARGET" 2>/dev/null || true
 		rm -rf "$STAGING"
-		mkdir -p "$STAGING/overlay/upper"
+		die "$CHOICE_TEXT" "В архиве нет overlay/upper."
+	fi
 
-		echo "      распаковываю архив в $STAGING ..."
-		if ! tar -xzf "$ARCHIVE_PATH" -C "$STAGING" 2>/tmp/tar_restore.err; then
-			umount "$RESTORE_TARGET" 2>/dev/null || true
-			rm -rf "$STAGING"
-			die "$CHOICE_TEXT" "Не удалось распаковать архив."
-		fi
+	STAGING_SIZE_KB=$(du -sk "$STAGING/overlay/upper" 2>/dev/null | awk '{print $1}')
+	ARCHIVE_KB=$(du -k "$ARCHIVE_PATH" 2>/dev/null | awk '{print $1}')
+	AVAIL_KB=$(df -k "$RESTORE_TARGET" 2>/dev/null | awk 'NR==2 {print $4}')
+	TARGET_UPPER_KB=$(du -sk "$RESTORE_TARGET/upper" 2>/dev/null | awk '{print $1}')
+	[ -z "$TARGET_UPPER_KB" ] && TARGET_UPPER_KB=0
 
-		if [ ! -d "$STAGING/overlay/upper" ]; then
-			umount "$RESTORE_TARGET" 2>/dev/null || true
-			rm -rf "$STAGING"
-			die "$CHOICE_TEXT" "В архиве нет overlay/upper."
-		fi
-
-		echo "      переношу upper на Цель..."
-		rm -rf "$RESTORE_TARGET/upper"
-		mkdir -p "$RESTORE_TARGET/work"
-
-		if ! mv "$STAGING/overlay/upper" "$RESTORE_TARGET/upper" 2>/dev/null; then
-			umount "$RESTORE_TARGET" 2>/dev/null || true
-			rm -rf "$STAGING"
-			die "$CHOICE_TEXT" "Не смог переместить upper на Цель."
-		fi
-		rm -rf "$STAGING"
+	# Определяем ФС цели (для внутреннего UBI это ubifs, для внешних — что угодно)
+	NEED_ON_TARGET_KB=0
+	if [ "$BATCH_DEVICE" = "internal" ]; then
+		# ubifs: эффективная компрессия, размер upper ≈ размер архива * EST_UBIFS_PCT
+		NEED_ON_TARGET_KB=$(( ARCHIVE_KB * EST_UBIFS_PCT / 100 ))
+		echo "      ФС цели: ubifs (внутренний UBI), оценка размера upper: ${NEED_ON_TARGET_KB}K"
 	else
-		# ВЕТКА Б: Цель НЕ inner И неактивна — копируем архив прямо на цельный диск в корень и распаковываем
-		echo "      цель неактивна: копирую архив на цель и распаковываю на месте..."
+		# ext4/f2fs/vfat/btrfs/xfs — размер upper ≈ размер распакованного в tmpfs * EST_OTHER_PCT
+		NEED_ON_TARGET_KB=$(( STAGING_SIZE_KB * EST_OTHER_PCT / 100 ))
+		echo "      ФС цели: не ubifs (внешний), оценка размера upper: ${NEED_ON_TARGET_KB}K"
+	fi
+
+	AFTER_RM_AVAIL_KB=$(( AVAIL_KB + TARGET_UPPER_KB ))
+	echo "      архив: ${ARCHIVE_KB}K, staging: ${STAGING_SIZE_KB}K"
+	echo "      свободно на Цели: ${AVAIL_KB}K, upper старый: ${TARGET_UPPER_KB}K"
+	echo "      после rm upper будет свободно: ${AFTER_RM_AVAIL_KB}K"
+	
+	
+	
+	
+	
+	
+	# Проверка UBI: если avail_eraseblocks=0 и текущее свободное место
+	# меньше, чем нужно для нового upper — GC заблокирован, direct method
+	# упадёт с ENOSPC, оставив систему без upper. Не начинаем.
+		if [ "$BATCH_DEVICE" = "internal" ] && [ "$RESTORE_TARGET" = "/overlay" ]; then
+		UBI_ROOT_DATA_PATH=""
+		for _nf in /sys/class/ubi/ubi*_*/name; do
+			[ -f "$_nf" ] || continue
+			[ "$(cat "$_nf" 2>/dev/null)" = "rootfs_data" ] || continue
+			UBI_ROOT_DATA_PATH=$(dirname "$_nf")
+			break
+		done
 		
-		# Копируем архив в корень целевого накопителя
-		ARCH_NAME=$(basename "$ARCHIVE_PATH")
-		TARGET_ARCHIVE="$RESTORE_TARGET/$ARCH_NAME"
-		
-		if ! cp "$ARCHIVE_PATH" "$TARGET_ARCHIVE" 2>/dev/null; then
-			umount "$RESTORE_TARGET" 2>/dev/null || true
-			die "$CHOICE_TEXT" "Не смог скопировать архив на целевой накопитель."
+		if [ -n "$UBI_ROOT_DATA_PATH" ]; then
+			UBI_VOL_NAME=$(basename "$UBI_ROOT_DATA_PATH")
+			UBI_DEV_NAME="${UBI_VOL_NAME%_*}"
+			
+			UBI_AVAIL_LEB=$(ubinfo "/dev/$UBI_DEV_NAME" 2>/dev/null \
+				| awk -F: '/Amount of available logical eraseblocks:/ {
+					gsub(/^ +/, "", $2);
+					split($2, _a, " ");
+					print _a[1];
+					exit
+				}')
+			
+			case "$UBI_AVAIL_LEB" in
+				''|*[!0-9]*)
+					echo "      (avail_eraseblocks не определён, проверка пропущена)"
+					;;
+				0)
+					if [ "$AVAIL_KB" -lt "$NEED_ON_TARGET_KB" ]; then
+						umount "$RESTORE_TARGET" 2>/dev/null || true
+						rm -rf "$STAGING"
+						die "$CHOICE_TEXT" "Ubifs-том ${UBI_VOL_NAME} на ${UBI_DEV_NAME} переполнен, GC заблокирован.
+	
+	avail_eraseblocks = 0 → obsolete блоки не могут быть освобождены.
+	Свободно сейчас:          ${AVAIL_KB}K
+	Нужно для нового upper:   ${NEED_ON_TARGET_KB}K
+	
+	Удаление старого upper не поможет: физически оно не освобождает
+	место, а GC не может переработать obsolete LEB'ы.
+	
+	Восстановление на active internal невозможно без полного сброса тома.
+	Варианты:
+	  0. Освободить место вручную (удалить пакеты), перезагрузить, повторить восстановление.
+	  1. Сброс роутера, затем восстановление из архива на чистый internal.
+	  2. Перепрошивка роутера, затем восстановление из архива на чистый internal.
+	  3. Восстановление на внешний носитель (extroot)."
+					fi
+					;;
+				*)
+					echo "      UBI: avail_eraseblocks = ${UBI_AVAIL_LEB} на /dev/${UBI_DEV_NAME}, GC работает"
+					;;
+			esac
 		fi
+	fi
+
+
+	
+	
+	
+	
+
+	if [ "$AVAIL_KB" -ge "$NEED_ON_TARGET_KB" ]; then
+		echo "      ---> БЕЗОПАСНЫЙ МЕТОД (upper.new)"
 		
-		# Создаем структуру overlay, если её нет
-		mkdir -p "$RESTORE_TARGET/overlay"
-		mkdir -p "$RESTORE_TARGET/work"
-		
-		# Распаковываем во временную папку upper.new прямо на целевом разделе
+		echo "      ---> Очищаю старый upper.new (если остался)..."
 		rm -rf "$RESTORE_TARGET/upper.new"
+		echo "      ---> Очистка завершена (код: $?)"
+		
 		mkdir -p "$RESTORE_TARGET/upper.new"
 		
-		if ! tar -xzf "$TARGET_ARCHIVE" -C "$RESTORE_TARGET" overlay/upper 2>/tmp/tar_restore.err; then
-			rm -f "$TARGET_ARCHIVE"
-			rm -rf "$RESTORE_TARGET/upper.new"
+		echo "      ---> Копирую staging в upper.new (через tar)..."
+		if ! (run_tar -C "$STAGING/overlay/upper" -czf - . | run_tar -C "$RESTORE_TARGET/upper.new" -xzf -) 2>/dev/null; then
+			echo "      ---> ОШИБКА КОПИРОВАНИЯ"
 			umount "$RESTORE_TARGET" 2>/dev/null || true
-			die "$CHOICE_TEXT" "Не удалось распаковать архив на целевом накопителе."
-     	fi
-		
-		# Если tar распаковал в overlay/upper, переносим из overlay/upper в upper.new
-		if [ -d "$RESTORE_TARGET/overlay/upper" ]; then
-			cp -a "$RESTORE_TARGET/overlay/upper/." "$RESTORE_TARGET/upper.new/" 2>/dev/null
-			rm -rf "$RESTORE_TARGET/overlay"
-		fi
-		
-		# Удаляем временную копию архива с целевого диска
-		rm -f "$TARGET_ARCHIVE"
-		
-		if [ ! -d "$RESTORE_TARGET/upper.new/etc/config" ]; then
+			rm -rf "$STAGING"
 			rm -rf "$RESTORE_TARGET/upper.new"
-			umount "$RESTORE_TARGET" 2>/dev/null || true
-			die "$CHOICE_TEXT" "Распакованный upper.new не содержит etc/config."
+			die "$CHOICE_TEXT" "Не смог скопировать upper в upper.new."
 		fi
+		echo "      ---> Скопировано успешно"
 		
-		# Заменяем старый upper на новый
+		echo "      ---> УДАЛЯЮ старый upper..."
 		rm -rf "$RESTORE_TARGET/upper"
-		mv "$RESTORE_TARGET/upper.new" "$RESTORE_TARGET/upper"
-		echo -e "${CLR_GREEN}      распаковка на внешнюю неактивную цель завершена ${CLR_RESET}"
+		echo "      ---> Удаление завершено (код: $?)"
+		
+		echo "      ---> ПЕРЕИМЕНОВЫВАЮ upper.new -> upper..."
+		if ! mv "$RESTORE_TARGET/upper.new" "$RESTORE_TARGET/upper" 2>/dev/null; then
+			echo "      ---> ОШИБКА ПЕРЕИМЕНОВАНИЯ"
+			umount "$RESTORE_TARGET" 2>/dev/null || true
+			rm -rf "$STAGING"
+			die "$CHOICE_TEXT" "Не смог переименовать upper.new."
+		fi
+		echo "      ---> Переименование завершено (код: $?)"
+	elif [ "$AFTER_RM_AVAIL_KB" -ge "$NEED_ON_TARGET_KB" ]; then
+		echo "      ---> ПРЯМОЙ МЕТОД (без upper.new)"
+		
+		echo "      ---> УДАЛЯЮ старый upper..."
+		rm -rf "$RESTORE_TARGET/upper"
+		echo "      ---> Удаление завершено (код: $?)"
+		echo "      ---> sync + ждём GC ubifs (5с)..."
+		sync
+		sleep 5
+		echo "      ---> sync + ожидание завершены"
+
+		echo "      ---> КОПИРУЮ staging/overlay/upper/. -> upper/ (через tar)..."
+		mkdir -p "$RESTORE_TARGET/upper"
+		: > /tmp/cp_direct.err
+		CP_OK=0
+		if (run_tar -C "$STAGING/overlay/upper" -czf - . | run_tar -C "$RESTORE_TARGET/upper" -xzf -) 2>>/tmp/cp_direct.err; then
+			CP_OK=1
+			echo "      ---> Скопировано с первой попытки"
+		else
+			echo "      ---> Попытка 1 провалена. Жду GC ubifs 15с..."
+			sync
+			sleep 15
+			if (run_tar -C "$STAGING/overlay/upper" -czf - . | run_tar -C "$RESTORE_TARGET/upper" -xzf -) 2>>/tmp/cp_direct.err; then
+				CP_OK=1
+				echo "      ---> Скопировано со второй попытки"
+			fi
+		fi
+		
+		if [ "$CP_OK" != "1" ]; then
+			echo "      ---> ОШИБКА КОПИРОВАНИЯ. stderr из cp:"
+			head -30 /tmp/cp_direct.err
+			echo "      ---> staging НЕ УДАЛЁН (в ОЗУ: $STAGING)."
+			echo "      ---> Система без upper — не перезагружайте. Пробуйте:"
+			echo "          cp -a $STAGING/overlay/upper/. $RESTORE_TARGET/upper/"
+			umount "$RESTORE_TARGET" 2>/dev/null || true
+			die "$CHOICE_TEXT" "Не смог скопировать upper на Цель. Staging сохранён в $STAGING."
+		fi
+		
+		echo "      ---> Верификация upper/etc/config..."
+		if [ ! -d "$RESTORE_TARGET/upper/etc/config" ]; then
+			echo "      ---> ОШИБКА ВЕРИФИКАЦИИ. staging НЕ УДАЛЁН (в ОЗУ: $STAGING)."
+			umount "$RESTORE_TARGET" 2>/dev/null || true
+			die "$CHOICE_TEXT" "Скопированный upper не содержит etc/config. Staging сохранён в $STAGING."
+		fi
+		
+		echo "      ---> sync финальный..."
+		sync
+		sleep 2
+		echo "      ---> УДАЛЯЮ staging из ОЗУ..."
+		rm -rf "$STAGING"
+		echo "      ---> staging удалён"
+	else
+		echo "      ---> МЕСТА НЕ ХВАТАЕТ даже на прямой метод"
+		umount "$RESTORE_TARGET" 2>/dev/null || true
+		rm -rf "$STAGING"
+		die "$CHOICE_TEXT" "Недостаточно места на Цели.
+	Нужно на upper.new (свободно сейчас):        ${NEED_ON_TARGET_KB}K
+	Нужно на прямой метод (после rm upper):       ${NEED_ON_TARGET_KB}K
+	Свободно сейчас:                              ${AVAIL_KB}K
+	Свободно после rm upper:                      ${AFTER_RM_AVAIL_KB}K"
 	fi
+
+	mkdir -p "$RESTORE_TARGET/work"
+	rm -rf "$STAGING"
+	
+	
+	
+	
+	
+	
+	
+	
+
+
+
+
+
+
 
 
 	# 7. Настройка fstab и reboot-helper
@@ -2158,7 +2411,7 @@ FSTAB_EOF
 				rmdir "$UBI_MNT" 2>/dev/null || true
 			fi
 		fi
-		create_reboot_helper "$RESTORE_TARGET" "RESTORE-ARCHIVE"
+		create_reboot_helper "$RESTORE_TARGET/upper" "RESTORE-ARCHIVE"
 	fi
 
 	sync
@@ -2190,25 +2443,6 @@ FSTAB_EOF
 
 	exit 0
 fi
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 # ============================================================
 #  МЕНЮ (interactive)
