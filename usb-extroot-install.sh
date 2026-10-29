@@ -33,8 +33,6 @@ need_sh()   { need_file "$1"; sh -n "$1" 2>/dev/null || die "синтаксич�
 need_link() { [ -L "$1" ] || die "симлинк $1 не создан"; [ -e "$1" ] || die "симлинк $1 висит"; }
 
 # safe_ln TARGET LINK — идемпотентный симлинк.
-# Если LINK уже указывает на TARGET — ничего не делает (без "File exists").
-# Иначе (нет LINK, ведёт в другое место, обычный файл) — rm -f + ln -s.
 safe_ln() {
 	local target="$1" link="$2"
 	mkdir -p "$(dirname "$link")" || die "mkdir $(dirname "$link")"
@@ -370,7 +368,6 @@ method_switch_targets() {
     is_extroot=$(printf '%s' "$status_out" | awk -F= '$1=="extroot" {print $2}')
     cur_dev=$(printf '%s' "$status_out" | awk -F= '$1=="extroot_dev" {print $2}')
     
-    # Получаем человекочитаемые имена (с вендором и моделью) через тот же метод
     devices_out=$(run_script_action devices)
 
     printf '{ "result": ['
@@ -391,10 +388,8 @@ method_switch_targets() {
         [ -n "$mp" ] || continue
         
         if [ -d "$mp/upper/etc/config" ] || [ -d "$mp/etc/config" ]; then
-            # Берем красивое имя из results action=devices
             desc=$(printf '%s\n' "$devices_out" | awk -F'|' -v d="$dev" '$1==d {print $3; exit}')
             
-            # Если вдруг не нашли (fallback)
             if [ -z "$desc" ]; then
                 size_mb=$(df -m "$mp" 2>/dev/null | awk 'NR==2 {print $2}')
                 parent_name=$(basename "$(parent_dev "$dev")")
@@ -589,7 +584,7 @@ method_run() {
                 _fail "device required for $mode"; return
             fi
             if [ "$mode" = "restore_archive" ] && [ "$device" = "internal" ]; then
-                :  # internal разрешён только для restore_archive
+                : 
             elif [ "$mode" != "switch_overlay" ] && [ "${device#/dev/}" = "$device" ]; then
                 _fail "invalid device '$device'"; return
             elif [ "$mode" != "switch_overlay" ] && [ "$device" != "internal" ] && ! is_removable_storage "$device"; then
@@ -612,7 +607,6 @@ method_run() {
             if [ -z "$archive" ]; then _fail "archive required for restore_archive"; return; fi
             ;;
         backup_manual)
-            # device может быть active|internal|/dev/... — оставляем как есть
             archive=""
             ;;
         *)
@@ -884,6 +878,7 @@ return view.extend({
         }, 'Сбросить настройки (оставить загрузку с флешки)');
 
         var updateUI = function(status, devices, switchTargets) {
+            self._lastStatus = status;
             var isExtroot = (status.extroot === 'yes');
             var isFallback = (status.fallback === 'yes');
             var curDev = status.extroot_dev || '';
@@ -1227,36 +1222,24 @@ return view.extend({
         }).catch(function(err) { ui.addNotification(null, E('p', {}, 'Ошибка запуска: ' + err), 'danger'); self._lockUI(false); });
     },
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     showUploadDialog: function(logPre) {
         var self = this;
         if (!writeToken) { ui.addNotification(null, E('p', {}, 'Загрузка архивов требует права записи (write-ACL).'), 'danger'); return; }
         
-        callStatus().then(function(res) {
-            var st = unwrap(res) || {};
+        var renderDialog = function(st) {
             var isExtroot = (st.extroot === 'yes');
-
+            
             var fileInput = E('input', { 'type': 'file', 'accept': '.tar.gz', 'style': 'margin-bottom:10px; width:100%;' });
             
             var copyCheckbox = E('input', { 
                 'type': 'checkbox', 
                 'id': 'upload-copy-to-usb', 
-                'style': 'margin-right:8px;',
-                'disabled': !isExtroot 
+                'style': 'margin-right:8px;'
             });
+            
+            if (!isExtroot) {
+                copyCheckbox.disabled = true;
+            }
             
             var copyLabelText = isExtroot 
                 ? 'Скопировать архив на накопитель' 
@@ -1292,8 +1275,14 @@ return view.extend({
                         statusText.textContent = 'Загрузка... (' + Math.round(file.size / 1024) + ' KB)';
                         progressBar.style.display = 'block';
                         
+                        copyCheckbox.disabled = true;
+                        copyLabel.style.color = '#888';
+                        
                         var xhr = new XMLHttpRequest();
                         var uploadUrl = '/cgi-bin/usb-extroot-upload?file=' + encodeURIComponent(file.name);
+                        if (shouldCopy) {
+                            uploadUrl += '&save_usb=1';
+                        }
                         if (writeToken) {
                             uploadUrl += '&token=' + encodeURIComponent(writeToken);
                         }
@@ -1316,7 +1305,7 @@ return view.extend({
 
                                 var archiveParam = 'tmp/' + file.name;
                                 if (shouldCopy) {
-                                    archiveParam = 'save_tmp/' + file.name;
+                                    archiveParam = file.name; // Голое имя, так как файл уже в /overlay/usb-extroot-backups/
                                 }
 
                                 Promise.all([ callDevices(), callStatus() ]).then(function(results) {
@@ -1331,7 +1320,6 @@ return view.extend({
                                         targetSelect.appendChild(E('option', { 'value': d.dev }, d.desc));
                                     });
 
-                                    // По умолчанию — текущая загрузка: extroot → текущий диск, иначе internal
                                     if (st.extroot_dev) {
                                         targetSelect.value = st.extroot_dev;
                                     } else {
@@ -1376,25 +1364,20 @@ return view.extend({
                 }, 'Загрузить и восстановить')
             ]);
             ui.showModal('Загрузка и восстановление из архива', [ body, footer ]);
-        }).catch(function(err) {
-            ui.addNotification(null, E('p', {}, 'Ошибка проверки статуса: ' + err), 'danger');
-        });
+        };
+
+        if (self._lastStatus) {
+            renderDialog(self._lastStatus);
+        } else {
+            callStatus().then(function(res) {
+                var st = unwrap(res) || {};
+                self._lastStatus = st;
+                renderDialog(st);
+            }).catch(function(err) {
+                ui.addNotification(null, E('p', {}, 'Ошибка проверки статуса: ' + err), 'danger');
+            });
+        }
     },
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
     downloadArchive: function(relPath) {
         if (!readToken) return Promise.resolve(false);
@@ -1520,6 +1503,7 @@ runOp: function(mode, device, archive, logPre) {
                 'class': 'cbi-button cbi-button-negative',
                 'click': function() {
                     ui.hideModal();
+                    self._noBackup = true; // <--- Запоминаем, что бэкап не делали
                     // Отказ от бэкапа → сразу метка: после restore паузу не ждём
                     callAbortSleep().catch(function() {}).then(function() {
                         self.showConfirmDialog('restore_archive', device, archive, logPre);
@@ -1539,8 +1523,13 @@ runOp: function(mode, device, archive, logPre) {
 
     doBackupThenRestore: function(device, archive, logPre) {
         var self = this;
+        self._noBackup = false; // <--- Бэкап делаем, флаг снимаем
         logPre.textContent = '';
         self._lockUI(true);
+		
+		
+		
+		
 
         callRun('backup_manual', device, '', 'yes').then(function(res) {
             if (res && res.error) {
@@ -1555,21 +1544,7 @@ runOp: function(mode, device, archive, logPre) {
         });
     },
 
-    
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	    _pollBackupThenRestore: function(device, archive, logPre) {
+    _pollBackupThenRestore: function(device, archive, logPre) {
         var self = this;
         var downloaded = false;
         var completed = false;
@@ -1624,16 +1599,6 @@ runOp: function(mode, device, archive, logPre) {
             }).catch(function() {});
         }, 1000);
     },
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
 
     showConfirmDialog: function(mode, device, archive, logPre) {
         var self = this;
@@ -1703,7 +1668,7 @@ runOp: function(mode, device, archive, logPre) {
         var archiveDownloaded = false;
         var runningNotified = false;
         var manualDownloaded = false;
-        var watchArchiveInfo = (mode !== 'backup_manual');
+        var watchArchiveInfo = (mode !== 'backup_manual' && mode !== 'restore_archive');
         var watchManualReady = (mode === 'backup_manual');
         var self = this;
         var pollTicks = 0;
@@ -1751,15 +1716,6 @@ runOp: function(mode, device, archive, logPre) {
             ui.showModal('Требуется подтверждение перезагрузки', [ body ]);
         };
 
-
-
-
-
-
-
-
-
-
 pollTimer = setInterval(function() {
             pollTicks++;
             callLog().then(function(res) {
@@ -1768,12 +1724,12 @@ pollTimer = setInterval(function() {
                     logPre.textContent = cleanLog(r.chunk);
                     logPre.scrollTop = logPre.scrollHeight;
 
-                    // ---> ВСТАВЛЯТЬ ИМЕННО СЮДА <---
                     if (!archiveDownloaded && r.chunk.indexOf('EXTROOT_READY_CODE_777888') !== -1) {
                         archiveDownloaded = true;
-                        showDownloadModal();
+                        if (!self._noBackup) {
+                            showDownloadModal();
+                        }
                     }
-                    // ------------------------------
 
                     if (watchManualReady && !manualDownloaded) {
                         var m = r.chunk.match(/MANUAL_ARCHIVE_READY=(\S+)/);
@@ -1793,18 +1749,9 @@ pollTimer = setInterval(function() {
                 }
             }).catch(function() {});
 
-
-
-
-
-
-
-
-
 if (watchArchiveInfo && !archiveDownloaded && mode !== 'switch_overlay') {
                 callArchiveInfo().then(function(res) {
                     var r = unwrap(res);
-                    // Добавляем режим restore_archive, чтобы он тоже триггерил модалку
                     if (r && (r.exists === 'yes') && !archiveDownloaded) {
                         archiveDownloaded = true;
                         showDownloadModal();
@@ -1893,6 +1840,11 @@ if [ -n "$FILE" ]; then
     fi
 
     if [ -z "$FOUND" ]; then
+        candidate="/overlay/usb-extroot-backups/$FILE"
+        [ -f "$candidate" ] && FOUND="$candidate"
+    fi
+
+    if [ -z "$FOUND" ]; then
         for mnt in $(awk '$3=="ext4" || $3=="f2fs" || $3=="btrfs" {print $2}' /proc/mounts); do
             candidate="$mnt/usb-extroot-backups/$FILE"
             if [ -f "$candidate" ]; then FOUND="$candidate"; break; fi
@@ -1970,14 +1922,23 @@ if [ "$REQ_TOKEN" != "$EXPECTED_WRITE" ]; then
 fi
 
 FILE=""
+SAVE_USB=0
 [ -n "$QUERY_STRING" ] && for pair in $(echo "$QUERY_STRING" | tr '&' ' '); do
-    case "$pair" in file=*) FILE="${pair#file=}" ;; esac
+    case "$pair" in 
+        file=*) FILE="${pair#file=}" ;;
+        save_usb=*) SAVE_USB="${pair#save_usb=}" ;;
+    esac
 done
 
 FILE=$(echo "$FILE" | sed 's|%2[Ff]|/|g; s|%20| |g')
 FILE=$(basename "$FILE")
 
-TMPFILE="/tmp/$FILE"
+if [ "$SAVE_USB" = "1" ]; then
+    mkdir -p "/overlay/usb-extroot-backups"
+    TMPFILE="/overlay/usb-extroot-backups/$FILE"
+else
+    TMPFILE="/tmp/$FILE"
+fi
 cat > "$TMPFILE"
 
 if [ ! -s "$TMPFILE" ]; then echo "Status: 400"; echo; echo "No data"; exit 0; fi
