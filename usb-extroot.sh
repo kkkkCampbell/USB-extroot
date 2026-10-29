@@ -1,6 +1,6 @@
 #!/bin/sh
 # ============================================================
-#  usb-extroot.sh  v0.1.44.27-draft
+#  usb-extroot.sh  v0.1.44.28-draft
 #  Перенос overlay OpenWrt на USB-накопитель (extroot)
 #  Лог: /tmp/usb-extroot.log
 #  Бэкап: /tmp/.usb-extroot-x7k2m9q4p1w8/
@@ -8,7 +8,7 @@
 #  sh <( wget -qO- https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft/usb-extroot-install.sh )
 #  sh /usb-extroot-install.sh
 # ============================================================
-ver="v0.1.44.27-draft"
+ver="v0.1.44.28-draft"
 SRC_BASE="https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft"
 TEST_MODE=0
 # ------------------------------------------------------------
@@ -29,6 +29,23 @@ EST_OTHER_PCT=110
 # ------------------------------------------------------------
 #  0. ОБЩИЕ ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ (РЕЮЗИНГ КОДА)
 # ------------------------------------------------------------
+
+remove_whiteouts(){
+
+local_stage_dir="$1"
+
+if [ "$whiteouts_removed" != "1"  ]; then
+	echo "      удаляю whiteouts из staging..."
+	find "$local_stage_dir/overlay/upper" -name '.wh.*' -delete 2>/dev/null || true
+	find "$local_stage_dir/overlay/upper" -type c -delete 2>/dev/null || true
+	find "$local_stage_dir/overlay/upper" -type d -empty -delete 2>/dev/null || true
+	whiteouts_removed=1
+else 
+	echo "      whiteouts удалены ранее"
+fi
+}
+
+
 cleanup_smb_user() {
 	if command -v ksmbd.useradmin >/dev/null 2>&1; then
 		ksmbd.useradmin -d 12345 >/dev/null 2>&1
@@ -569,18 +586,6 @@ confirm_reboot_or_die() {
 	local cancel=0 i
 
 	if [ "$BATCH" = "1" ]; then
-		[ "$need_share_down" = "1" ] && share_down
-		echo 
-		echo -e "${CLR_ORANGE}############################################################${CLR_RESET}"
-		echo 
-		echo "    Перезагружаюсь..."
-		echo -e "${CLR_ORANGE}    При перезагрузке  возможно зависание роутера!"
-		echo -e "    Перезапустите роутер отключив и подав питание.${CLR_RESET}"
-		echo
-		echo -e "${CLR_ORANGE}############################################################${CLR_RESET}"
-		sleep 5
-		sync
-		sleep 2
 		soft_reboot_with_fallback 40
 		return
 	fi
@@ -1090,13 +1095,12 @@ stage2_find_usb() {
 	USB_PRESENT=1
 	set -- $DISKS
 
-	echo "Найдены внешние накопители:"
+	echo "      Найдены внешние накопители:"
 	n=0
 	for d in $DISKS; do
 		n=$((n + 100))
-		echo -e "  ${CLR_YELLOW}$n -> ${CLR_GREEN}$(describe $d)  ${CLR_RESET}"
+		echo -e "        ${CLR_YELLOW}$n -> ${CLR_GREEN}$(describe $d)  ${CLR_RESET}"
 	done
-	echo
 
 	if [ "$BATCH" = "1" ]; then
 		ok=0
@@ -2878,7 +2882,7 @@ else
 	fi
 fi
 
-echo -e "Подтверждено: ${CLR_YELLOW}$TARGET ($MODE)${CLR_RESET}."
+echo -e "      Подтверждено: ${CLR_YELLOW}$TARGET ($MODE)${CLR_RESET}."
 
 echo
 STAGE5="[5/9] пакеты"
@@ -2910,6 +2914,8 @@ if [ ! -d "$STAGE_DIR/overlay/upper/etc/config" ]; then
 	die "$STAGE6" "Staging неполный — нет overlay/upper/etc/config."
 fi
 echo -e "${CLR_GREEN}      staging корректный${CLR_RESET}"
+
+remove_whiteouts "${STAGE_DIR}"
 
 echo
 STAGE7="[7/9] подготовка $PART"
@@ -2961,7 +2967,6 @@ if [ "$MODE" = format ]; then
 fi
 
 if [ "$MODE" = format ]; then
-	echo "      форматирование $PART в ext4..."
 
 	sync
 	sleep 1
@@ -3009,7 +3014,6 @@ if [ "$MODE" = format ]; then
 			fatal "$STAGE7" "USB-диск не переподключился за 20 сек."
 		fi
 
-		echo "      диск найден заново: $FOUND"
 		
 		if [ -z "$FOUND" ]; then
 			fatal "$STAGE7" "USB-диск не переподключился за 20 сек."
@@ -3062,7 +3066,7 @@ if [ "$MODE" = format ]; then
 			fatal "$STAGE7" "Раздел $PART не удаётся освободить перед mkfs."
 		fi
 		echo -e "${CLR_GREEN}      $PART свободен после пересоздания${CLR_RESET}"
-		echo -e "${CLR_ORANGE}Форматирую накопитель...${CLR_RESET}"
+		echo -e "${CLR_ORANGE}> Форматирую накопитель...${CLR_RESET}"
 	fi
 
 	mkfs_success=0
@@ -3160,10 +3164,7 @@ echo "$STAGE8 в $BACKUP_DIR ..."
 mkdir -p "$BACKUP_DIR"
 	BACKUP_ARCHIVE="$BACKUP_DIR/backup-full-$(get_backup_name)"
 
-echo "      удаляю whiteouts из staging..."
-find "$STAGE_DIR/overlay/upper" -name '.wh.*' -delete 2>/dev/null || true
-find "$STAGE_DIR/overlay/upper" -type c -delete 2>/dev/null || true
-find "$STAGE_DIR/overlay/upper" -type d -empty -delete 2>/dev/null || true
+remove_whiteouts "${STAGE_DIR}"
 
 echo "      создаю архив $BACKUP_ARCHIVE ..."
 if ! tar -C "$STAGE_DIR" -czf "$BACKUP_ARCHIVE" overlay 2>/tmp/tar_read.err; then
