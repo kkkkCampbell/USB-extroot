@@ -7,7 +7,7 @@
 #  Запуск: sh /opt/usb-extroot/usb-extroot.sh
 # 
 #  Установка:
-#  sh <( wget -qO- https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft/usb-extroot-install.sh )
+#  sh <( wget -qO- https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft-ref---tored/install.sh )
 #  
 # ============================================================
 ver="v0.1.45.00-draft-ref**tored"
@@ -1722,7 +1722,7 @@ do_transfer() {
 	echo
 	STAGE3="[3/9] проверки безопасности"
 	echo "$STAGE3 ..."
-	SRC_SIZE_KB=$(du -sk "$CUR_OVERLAY_MP" 2>/dev/null | awk '{print $1}')
+	SRC_SIZE_KB=$(du -sk "$CUR_OVERLAY_MP/upper" 2>/dev/null | awk '{print $1}')
 	rm -rf "$UE_RT/stage"
 	TMP_AVAIL_KB=$(df -k /tmp 2>/dev/null | awk 'NR==2 {print $4}')
 	echo "      overlay: ${SRC_SIZE_KB}K, /tmp свободно: ${TMP_AVAIL_KB}K"
