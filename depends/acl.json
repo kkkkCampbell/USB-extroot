@@ -1,0 +1,35 @@
+{
+	"luci-app-usb-extroot": {
+		"description": "USB extroot — управление загрузочным накопителем",
+		"read": {
+			"ubus": {
+				"luci.usb-extroot": [
+					"version",
+					"status",
+					"devices",
+					"switch_targets",
+					"backup_sources",
+					"archive_info",
+					"archive_list",
+					"log",
+					"api_read_token",
+					"api_write_token",
+					"emergency_archive",
+					"get_settings"
+				]
+			},
+			"uci": [ "usb-extroot" ]
+		},
+		"write": {
+			"ubus": {
+				"luci.usb-extroot": [
+					"run",
+					"reboot_now",
+					"reboot_cancel",
+					"save_settings"
+				]
+			},
+			"uci": [ "usb-extroot" ]
+		}
+	}
+}

@@ -1,0 +1,385 @@
+#!/bin/sh
+# ============================================================
+#  luci.usb-extroot — rpcd entry point с логированием
+# ============================================================
+
+. /opt/usb-extroot/lib/paths.sh
+
+METHODS="version status devices switch_targets log archive_info archive_list backup_sources api_read_token api_write_token emergency_archive get_settings run reboot_now reboot_cancel save_settings"
+
+_dispatch() {
+	echo "$(date +%T) DISPATCH: method=[$2] args=[$3]" >> /tmp/huy_dispatch.log
+	case "$1" in
+	list)
+		printf '{'
+		first=1
+		for m in $METHODS; do
+			[ "$first" = "1" ] || printf ','
+			first=0
+			case "$m" in
+				run) printf '"run":{"mode":"String","device":"String","archive":"String","confirm":"String","backup":"String"}' ;;
+				save_settings) printf '"save_settings":{"autobackup_enabled":"String","manual_rotate":"String","auto_rotate":"String"}' ;;
+				*) printf '"%s":{}' "$m" ;;
+			esac
+		done
+		printf '}\n'
+		;;
+	call)
+		method="$2"
+		if [ -n "$3" ]; then
+			case "$method" in
+				run)
+					args="{\"mode\":\"$3\",\"device\":\"$4\",\"archive\":\"$5\",\"confirm\":\"$6\",\"backup\":\"$7\"}"
+					;;
+				save_settings)
+					args="{\"autobackup_enabled\":\"$3\",\"manual_rotate\":\"$4\",\"auto_rotate\":\"$5\"}"
+					;;
+				*)
+					args=$(cat)
+					;;
+			esac
+		else
+			args=$(cat)
+		fi
+		
+		echo "$(date +%T) CALL: method=[$method] args=[$args]" >> /tmp/huy_dispatch.log
+		
+		case " $METHODS " in
+			*" $method "*) ;;
+			*) printf '{"error":"unknown method: %s"}\n' "$method"; return 1 ;;
+		esac
+		"handle_$method" "$args"
+		;;
+	*)
+		printf '{"error":"invalid command"}\n'
+		return 1
+		;;
+	esac
+}
+
+esc_json() {
+	awk 'BEGIN{printf "\""} {gsub(/\\/,"\\\\");gsub(/"/,"\\\"");gsub(/\t/,"\\t");if(NR>1)printf "\\n";printf "%s",$0} END{printf "\""}'
+}
+
+json_str() { printf '%s' "$1" | esc_json; }
+
+val_get() {
+	printf '%s\n' "$1" | sed -n "s/^$2=//p" | head -1
+}
+
+json_get() {
+	local json="$1" key="$2"
+	if command -v jsonfilter >/dev/null 2>&1; then
+		printf '%s' "$json" | jsonfilter -e "@.$key" 2>/dev/null
+	else
+		printf '%s' "$json" | sed -n 's/.*"'"$key"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1
+	fi
+}
+
+ensure_rt_dir() {
+	mkdir -p "$UE_RT" "$BACKUPS_MANUAL" "$BACKUPS_AUTO" "$BACKUPS_EMERGENCY" \
+	         "$STAGE_DIR" "$MNT_DIR" "$ERR_DIR" "$PKG_DIR" 2>/dev/null || true
+}
+
+is_running() {
+	[ -f "$PID_FILE" ] || return 1
+	local pid
+	pid=$(cat "$PID_FILE" 2>/dev/null)
+	[ -n "$pid" ] || return 1
+	kill -0 "$pid" 2>/dev/null && return 0
+	rm -f "$PID_FILE"
+	return 1
+}
+
+# ЧТЕНИЕ: использует --action=
+run_script_action() {
+	local action="$1"
+	local out rc p tmp i state
+
+	echo "$(date +%T) RUN_ACTION: action=[$action]" >> /tmp/huy_dispatch.log
+
+	[ -x "$SCRIPT" ] || { echo "NOT_FOUND"; return 1; }
+	mkdir -p "$UE_RT" 2>/dev/null || true
+
+	if command -v timeout >/dev/null 2>&1; then
+		out=$(timeout -s KILL 30 "$SCRIPT" --batch --action="$action" 2>&1)
+		rc=$?
+		if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+			echo "TIMEOUT"
+			return 124
+		fi
+		[ "$rc" -ne 0 ] && { echo "SCRIPT_ERROR: $out"; return "$rc"; }
+		echo "$out"
+		return 0
+	fi
+
+	tmp="$UE_RT/.act.$$"
+	rm -f "$tmp"
+	"$SCRIPT" --batch --action="$action" >"$tmp" 2>&1 &
+	p=$!
+	i=0
+	while [ "$i" -lt 35 ]; do
+		[ -r "/proc/$p/stat" ] || break
+		state=$(awk '{print $3}' "/proc/$p/stat" 2>/dev/null)
+		[ "$state" = "Z" ] || [ -z "$state" ] && break
+		sleep 1
+		i=$((i + 1))
+	done
+	if [ "$i" -ge 35 ]; then
+		kill -9 "$p" 2>/dev/null
+		wait "$p" 2>/dev/null
+		rm -f "$tmp"
+		echo "TIMEOUT"
+		return 124
+	fi
+	wait "$p" 2>/dev/null
+	rc=$?
+	out=$(cat "$tmp" 2>/dev/null)
+	rm -f "$tmp"
+	[ "$rc" -ne 0 ] && { echo "SCRIPT_ERROR: $out"; return "$rc"; }
+	echo "$out"
+	return 0
+}
+
+handle_version() {
+	local v
+	v=$("$SCRIPT" --version 2>/dev/null | head -1)
+	printf '{"version":%s}' "$(json_str "${v:-unknown}")"
+}
+
+handle_status() {
+	local out fallback extroot dev desc running
+	out=$(run_script_action status)
+    case "$out" in TIMEOUT|SCRIPT_ERROR*|NOT_FOUND)
+        printf '{"error":%s}' "$(json_str "$out")"
+        return ;;
+    esac
+
+	fallback=$(val_get "$out" fallback)
+	extroot=$(val_get "$out" extroot)
+	dev=$(val_get "$out" extroot_dev)
+	desc=$(val_get "$out" extroot_desc)
+	if is_running; then running="true"; else running="false"; fi
+	printf '{"fallback":%s,"extroot":%s,"extroot_dev":%s,"extroot_desc":%s,"running":%s}' \
+		"$(json_str "${fallback:-no}")" \
+		"$(json_str "${extroot:-no}")" \
+		"$(json_str "$dev")" \
+		"$(json_str "$desc")" \
+		"$running"
+}
+
+handle_devices() {
+	local out
+	out=$(run_script_action devices)
+    case "$out" in TIMEOUT|SCRIPT_ERROR*|NOT_FOUND)
+        printf '{"error":%s}' "$(json_str "$out")"
+        return ;;
+    esac
+
+	printf '{"result":['
+	printf '%s\n' "$out" | awk -F'|' 'BEGIN{first=1}
+		NF>=3{
+			if(!first)printf ","
+			first=0
+			gsub(/\\/,"\\\\",$1); gsub(/"/,"\\\"",$1)
+			gsub(/\\/,"\\\\",$2); gsub(/"/,"\\\"",$2)
+			gsub(/\\/,"\\\\",$3); gsub(/"/,"\\\"",$3)
+			printf "{\"dev\":\"%s\",\"fs\":\"%s\",\"desc\":\"%s\"}", $1, $2, $3
+		}'
+	printf ']}'
+}
+
+handle_switch_targets() {
+	local out err_msg
+	out=$(run_script_action switch-targets)
+    case "$out" in TIMEOUT|SCRIPT_ERROR*|NOT_FOUND)
+        printf '{"error":%s}' "$(json_str "$out")"
+        return ;;
+    esac
+
+	err_msg=$(printf '%s\n' "$out" | grep -v '|' | grep -i "недоступны\|не найден" | head -1)
+	printf '{"result":['
+	printf '%s\n' "$out" | awk -F'|' 'BEGIN{first=1}
+		NF>=2{
+			if(!first)printf ","
+			first=0
+			gsub(/\\/,"\\\\",$1); gsub(/"/,"\\\"",$1)
+			gsub(/\\/,"\\\\",$2); gsub(/"/,"\\\"",$2)
+			printf "{\"dev\":\"%s\",\"desc\":\"%s\"}", $1, $2
+		}'
+	printf ']'
+	if [ -n "$err_msg" ]; then
+		printf ',"error":%s' "$(json_str "$err_msg")"
+	fi
+	printf '}'
+}
+
+handle_backup_sources() {
+	local out
+	out=$(run_script_action backup-sources)
+    case "$out" in TIMEOUT|SCRIPT_ERROR*|NOT_FOUND)
+        printf '{"error":%s}' "$(json_str "$out")"
+        return ;;
+    esac
+
+	printf '{"result":['
+	printf '%s\n' "$out" | awk -F'|' 'BEGIN{first=1}
+		NF>=2{
+			if(!first)printf ","
+			first=0
+			gsub(/\\/,"\\\\",$1); gsub(/"/,"\\\"",$1)
+			gsub(/\\/,"\\\\",$2); gsub(/"/,"\\\"",$2)
+			printf "{\"dev\":\"%s\",\"desc\":\"%s\"}", $1, $2
+		}'
+	printf ']}'
+}
+
+handle_archive_info() {
+	local out exists size
+	out=$(run_script_action archive-info)
+    case "$out" in TIMEOUT|SCRIPT_ERROR*|NOT_FOUND)
+        printf '{"error":%s}' "$(json_str "$out")"
+        return ;;
+    esac
+
+	exists=$(val_get "$out" exists)
+	size=$(val_get "$out" size)
+	printf '{"exists":%s,"size":%s}' \
+		"$(json_str "${exists:-no}")" "${size:-0}"
+}
+
+handle_archive_list() {
+	local out
+	out=$(run_script_action archive-list)
+    case "$out" in TIMEOUT|SCRIPT_ERROR*|NOT_FOUND)
+        printf '{"error":%s}' "$(json_str "$out")"
+        return ;;
+    esac
+
+	printf '{"result":['
+	printf '%s\n' "$out" | awk -F'|' 'BEGIN{first=1}
+		NF>=2{
+			p=$1
+			name=p; sub(/^.*\//,"",name)
+			if(name=="")next
+			if(!first)printf ","
+			first=0
+			pn=p; gsub(/\\/,"\\\\",pn); gsub(/"/,"\\\"",pn)
+			nn=name; gsub(/\\/,"\\\\",nn); gsub(/"/,"\\\"",nn)
+			printf "{\"name\":\"%s\",\"size\":%s,\"path\":\"%s\"}", nn, $2, pn
+		}'
+	printf ']}'
+}
+
+handle_log() {
+	local chunk=""
+	[ -f "$LOG" ] && chunk=$(tail -n 500 "$LOG" 2>/dev/null)
+	printf '{"chunk":%s}' "$(json_str "$chunk")"
+}
+
+handle_api_read_token() {
+	printf '{"read_token":%s}' \
+		"$(json_str "$(uci -q get "$UCI_CONFIG.$UCI_SECTION.read_token" 2>/dev/null)")"
+}
+
+handle_api_write_token() {
+	printf '{"write_token":%s}' \
+		"$(json_str "$(uci -q get "$UCI_CONFIG.$UCI_SECTION.write_token" 2>/dev/null)")"
+}
+
+handle_emergency_archive() {
+	local f path="" dir
+	for dir in "$BACKUPS_EMERGENCY" \
+	           /mnt/*/usb-extroot-backups/emergency_backup \
+	           /overlay/usb-extroot-backups/emergency_backup; do
+		[ -d "$dir" ] || continue
+		f=$(ls -t "$dir"/*.tar.gz 2>/dev/null | head -1)
+		[ -n "$f" ] && { path="$f"; break; }
+	done
+	printf '{"path":%s}' "$(json_str "$path")"
+}
+
+handle_get_settings() {
+	local en m a
+	en=$(uci -q get "$UCI_CONFIG.$UCI_SECTION.autobackup_enabled" 2>/dev/null)
+	m=$(uci -q get "$UCI_CONFIG.$UCI_SECTION.manual_rotate" 2>/dev/null)
+	a=$(uci -q get "$UCI_CONFIG.$UCI_SECTION.auto_rotate" 2>/dev/null)
+	printf '{"autobackup_enabled":%s,"manual_rotate":%s,"auto_rotate":%s}' \
+		"$(json_str "${en:-1}")" "${m:-50}" "${a:-30}"
+}
+
+handle_save_settings() {
+	local raw="$1" en m a
+
+	en=$(json_get "$raw" autobackup_enabled); [ -z "$en" ] && en="1"
+	case "$en" in 0|1) ;; *) en="1" ;; esac
+
+	m=$(json_get "$raw" manual_rotate)
+	case "$m" in ''|*[!0-9]*) m=50 ;; esac
+	[ "$m" -lt 5 ]  && m=5
+	[ "$m" -gt 50 ] && m=50
+
+	a=$(json_get "$raw" auto_rotate)
+	case "$a" in ''|*[!0-9]*) a=30 ;; esac
+	[ "$a" -lt 3 ]  && a=3
+	[ "$a" -gt 20 ] && a=20
+
+	uci -q set "$UCI_CONFIG.$UCI_SECTION.autobackup_enabled=$en"
+	uci -q set "$UCI_CONFIG.$UCI_SECTION.manual_rotate=$m"
+	uci -q set "$UCI_CONFIG.$UCI_SECTION.auto_rotate=$a"
+	uci commit "$UCI_CONFIG" 2>/dev/null
+
+	printf '{"result":{"ok":true}}'
+}
+
+# ЗАПИСЬ: использует --mode=
+handle_run() {
+	local raw="$1"
+	local mode device archive confirm backup aargs
+
+	mode=$(json_get "$raw" mode)
+	device=$(json_get "$raw" device)
+	archive=$(json_get "$raw" archive)
+	confirm=$(json_get "$raw" confirm)
+	backup=$(json_get "$raw" backup)
+
+	echo "$(date +%T) HANDLE_RUN_PARSED: mode=[$mode] device=[$device] confirm=[$confirm]" >> /tmp/huy_dispatch.log
+
+	[ -z "$mode" ] && { printf '{"error":"mode required"}'; return; }
+	[ "$confirm" != "yes" ] && { printf '{"error":"confirm=yes required"}'; return; }
+
+	if is_running; then
+		printf '{"error":"operation already running"}'
+		return
+	fi
+
+	ensure_rt_dir
+	rm -f "$REBOOT_NOW" "$REBOOT_CANCEL" 2>/dev/null || true
+
+	aargs="--batch --mode=$mode --confirm=yes"
+	[ -n "$device" ]  && aargs="$aargs --device=$device"
+	[ -n "$archive" ] && aargs="$aargs --archive=$archive"
+	case "$backup" in
+		yes|no) aargs="$aargs --backup=$backup" ;;
+		*)      aargs="$aargs --backup=yes" ;;
+	esac
+
+	echo "$(date +%T) HANDLE_RUN_EXEC: $SCRIPT $aargs" >> /tmp/huy_dispatch.log
+
+	nohup "$SCRIPT" $aargs </dev/null >/dev/null 2>&1 &
+	printf '{"result":{"pid":%s,"started":true}}' "$!"
+}
+
+handle_reboot_now() {
+	ensure_rt_dir
+	touch "$REBOOT_NOW" 2>/dev/null || true
+	printf '{"result":{"ok":true}}'
+}
+
+handle_reboot_cancel() {
+	ensure_rt_dir
+	touch "$REBOOT_CANCEL" 2>/dev/null || true
+	printf '{"result":{"ok":true}}'
+}
+
+_dispatch "$@"
