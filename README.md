@@ -13,14 +13,14 @@
 Скопировать и вставить в терминал ссылку.  
 Нажать Ввод.
 ```
-    sh <( wget -qO- https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/main/depends/usb-extroot.sh )
+sh <( wget -qO- https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/main/depends/usb-extroot.sh )
 ```
 ## Установка web-интерфейса и скрипта  
 Скопировать и вставить в терминал ссылку.  
 Нажать Ввод.
 
 ```
-    sh <( wget -qO- https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/main/usb-extroot-install.sh )
+sh <( wget -qO- https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/main/usb-extroot-install.sh )
 ```
 
 WEB-интерфейс доступен в Службы - USB extroot  
