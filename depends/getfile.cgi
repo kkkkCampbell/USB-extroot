@@ -17,7 +17,7 @@
 
 REMOTE="${REMOTE_ADDR:-}"
 case "$REMOTE" in
-	127.*|10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*) ;;
+	127.*|10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*|::1|fe80:*|fc*|fd*) ;;
 	*) printf 'Status: 403 Forbidden\n\nForbidden.\n'; exit 0 ;;
 esac
 
@@ -37,13 +37,15 @@ REQ_TOKEN=""
 done
 [ -n "${HTTP_X_EXTROOT_TOKEN:-}" ] && REQ_TOKEN="$HTTP_X_EXTROOT_TOKEN"
 
+# URL-decode (безопасно для файлов и токенов)
+FILE=$(printf '%s' "$FILE" | sed 's|%2[Ff]|/|g; s|%20| |g')
+REQ_TOKEN=$(printf '%s' "$REQ_TOKEN" | sed 's|%2B|+|g; s|%2[Ff]|/|g; s|%20| |g; s|%3[Dd]|=|g')
+
 TOKEN_OK=0
 [ -n "$REQ_TOKEN" ] && [ -n "$EXPECTED_READ" ]  && [ "$REQ_TOKEN" = "$EXPECTED_READ" ]  && TOKEN_OK=1
 [ -n "$REQ_TOKEN" ] && [ -n "$EXPECTED_WRITE" ] && [ "$REQ_TOKEN" = "$EXPECTED_WRITE" ] && TOKEN_OK=1
 [ "$TOKEN_OK" = "1" ] || { printf 'Status: 403 Forbidden\n\nBad token\n'; exit 0; }
 
-# URL-decode
-FILE=$(printf '%s' "$FILE" | sed 's|%2[Ff]|/|g; s|%20| |g')
 [ -z "$FILE" ] && { printf 'Status: 400 Bad Request\n\nfile= required\n'; exit 0; }
 
 # Отсекаем любую дрянь: .., обратные слэши, недопустимые символы.
@@ -109,5 +111,5 @@ printf 'Content-Disposition: attachment; filename="%s"\n' "$NAME"
 printf 'Cache-Control: no-store\n'
 printf 'X-Content-Type-Options: nosniff\n'
 printf '\n'
-dd if="$FOUND" bs=1M 2>/dev/null
+cat "$FOUND"
 exit 0

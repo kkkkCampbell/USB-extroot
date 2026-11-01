@@ -1,6 +1,6 @@
 #!/bin/sh
 # ============================================================
-#  usb-extroot.sh  v0.1.44.36-draft-ref**tored
+#  usb-extroot.sh  v0.1.45.00-draft-ref**tored
 #  Перенос overlay OpenWrt на USB-накопитель (extroot)
 #  Лог: /tmp/usb-extroot.log
 #  Бэкап: /tmp/.usb-extroot-x7k2m9q4p1w8/
@@ -10,13 +10,11 @@
 #  sh <( wget -qO- https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft/usb-extroot-install.sh )
 #  
 # ============================================================
-ver="v0.1.44.36-draft-ref**tored"
+ver="v0.1.45.00-draft-ref**tored"
 SRC_BASE="https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft"
 TEST_MODE=0
 EST_UBIFS_PCT=120
 EST_OTHER_PCT=110
-exec 2>/tmp/HUY.err
-echo "$(date '+%T') argv=$*" >> /tmp/HUY.txt
 
 if [ -f /opt/usb-extroot/lib/paths.sh ]; then
     . /opt/usb-extroot/lib/paths.sh
@@ -741,14 +739,20 @@ soft_reboot_with_fallback() {
 	setsid sh -c "
 		trap '' TERM
 		sleep $delay
+		echo "Перезагружаюсь..."
+		sleep 5
 		echo b > /proc/sysrq-trigger
 		sleep 1
 		reboot -f
 	" &
 	sleep 2
 	if [ "$MODE" = "noformat" ] || [ "$MODE" = "revert_extroot" ]; then
+		echo "Перезагружаюсь..."
+		sleep 5
 		reboot -f
 	fi
+	echo "Перезагружаюсь..."
+	sleep 5
 	reboot
 }
 
@@ -818,7 +822,7 @@ confirm_reboot_or_die() {
 	echo
 
 	if [ "$has_backup" = "1" ]; then
-		echo -e "${CLR_ORANGE}!!! ПЕРЕЗАГРУЗКА ЧЕРЕЗ 20 СЕКУНД !!!${CLR_RESET}"
+		echo -e "${CLR_ORANGE}!!! ПЕРЕЗАГРУЗКА ЧЕРЕЗ ${ARCHIVE_WAIT} СЕКУНД !!!${CLR_RESET}"
 		echo "    Любая клавиша — отмена."
 		i=20
 		while [ $i -gt 0 ]; do
@@ -2668,7 +2672,7 @@ do_reset_keep_extroot() {
       Роутер перезагружается"
 	sleep 10
 	sync
-	sleep 2
+	sleep 5
 	reboot -f
 }
 
@@ -2720,7 +2724,7 @@ BATCH_CONFIRM=""
 BATCH_ACTION=""
 BATCH_ARCHIVE=""
 BATCH_BACKUP="yes"
-ARCHIVE_WAIT=30
+ARCHIVE_WAIT=120
 
 for _a in "$@"; do
 echo $_a >> /tmp/a.txt
@@ -2758,8 +2762,10 @@ PID_FILE="${USB_EXTROOT_PID_FILE:-$PID_FILE}"
 LOG="${USB_EXTROOT_LOG:-$LOG}"
 LOCK_DIR="${USB_EXTROOT_LOCK_DIR:-}"
 
-# Стираем stale-маркеры прошлых прогонов, чтобы wait-loop не съел их сразу
-rm -f "$REBOOT_NOW" "$REBOOT_CANCEL" 2>/dev/null || true
+# Стираем stale-маркеры прошлых прогонов, ТОЛЬКО если это не --action=*
+if [ -z "$BATCH_ACTION" ]; then
+	rm -f "$REBOOT_NOW" "$REBOOT_CANCEL" 2>/dev/null || true
+fi
 
 _cleanup_pid_and_lock() {
 	sleep 6
@@ -2769,7 +2775,9 @@ _cleanup_pid_and_lock() {
 	fi
 }
 
-rm -f "$REBOOT_NOW" "$REBOOT_CANCEL" 2>/dev/null || true
+if [ -z "$BATCH_ACTION" ]; then
+	rm -f "$REBOOT_NOW" "$REBOOT_CANCEL" 2>/dev/null || true
+fi
 
 if [ "$BATCH" = "1" ] && [ -z "$BATCH_ACTION" ]; then
 	if [ "$BATCH_MODE" = "backup" ] && [ -f "$PID_FILE" ]; then

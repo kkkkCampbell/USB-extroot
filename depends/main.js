@@ -322,10 +322,10 @@ return view.extend({
 				savail++;
 			}
 		}
-		if (isExt) {
-			self._switchSelect.appendChild(E('option', { 'value': 'internal' }, 'Внутренняя память роутера'));
-			savail++;
-		}
+		// if (isExt) {
+			// self._switchSelect.appendChild(E('option', { 'value': 'internal' }, 'Внутренняя память роутера'));
+			// savail++;
+		// }
 		if (savail === 0) self._switchSelect.appendChild(E('option', { 'value': '' }, '— нет целей —'));
 
 		self._modeSelect.disabled    = !canW || isFb || avail === 0;
@@ -495,8 +495,10 @@ return view.extend({
 
 		cgiCall({ action: 'log', token: window._writeToken }).catch(function(){ return ''; }).then(function(chunk) {
 			chunk = chunk || '';
-			self._logPre.textContent = cleanLog(chunk);
-			self._logPre.scrollTop = self._logPre.scrollHeight;
+			if (chunk.trim().length > 0) {
+				self._logPre.textContent = cleanLog(chunk);
+				self._logPre.scrollTop = self._logPre.scrollHeight;
+			}
 
 			if (!self._state.shownFatal && /(^|\n)(ОШИБКА|СТОП):/.test(chunk)) {
 				self._state.shownFatal = true;
@@ -547,9 +549,10 @@ return view.extend({
 	},
 
 	_autoDownload: function(name) {
-		if (!name || !this._readToken) return;
+		var tok = this._readToken || this._writeToken;
+		if (!name || !tok) return;
 		var a = document.createElement('a');
-		a.href = dlUrl(name, this._readToken);
+		a.href = dlUrl(name, tok);
 		a.download = name;
 		document.body.appendChild(a);
 		a.click();
@@ -563,8 +566,13 @@ return view.extend({
 
 		var btnDl = E('button', { 'class': 'cbi-button cbi-button-apply',
 			'click': function(){
-				if (name) self._autoDownload(name);
-				else ui.addNotification(null, E('p', {}, 'Имя архива не найдено в логе.'), 'warning');
+				if (name) {
+					var tok = self._readToken || self._writeToken;
+					if (tok) window.location.href = dlUrl(name, tok);
+					else ui.addNotification(null, E('p', {}, 'Нет токена для скачивания.'), 'danger');
+				} else {
+					ui.addNotification(null, E('p', {}, 'Имя архива не найдено в логе.'), 'warning');
+				}
 			}
 		}, '📥 Скачать архив');
 
@@ -607,13 +615,20 @@ return view.extend({
 
 		var btnDl = E('button', { 'class': 'cbi-button cbi-button-apply',
 			'click': function(){
-				if (name) { self._autoDownload(name); return; }
+				if (name) {
+					var tok = self._readToken || self._writeToken;
+					if (tok) window.location.href = dlUrl(name, tok);
+					else ui.addNotification(null, E('p', {}, 'Нет токена.'), 'danger');
+					return;
+				}
 				cgiCall({ action: 'emergency-archive', token: window._writeToken }).then(function(res){
 					if (res && res.trim()) {
 						var p = res.trim();
 						var slash = p.lastIndexOf('/');
 						var n = slash >= 0 ? p.substring(slash + 1) : p;
-						self._autoDownload(n);
+						var tok = self._readToken || self._writeToken;
+						if (tok) window.location.href = dlUrl(n, tok);
+						else ui.addNotification(null, E('p', {}, 'Нет токена.'), 'danger');
 					} else {
 						ui.addNotification(null, E('p', {}, 'Архив не найден.'), 'warning');
 					}

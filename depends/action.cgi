@@ -1,6 +1,6 @@
 #!/bin/sh
 # ============================================================
-#  cgi/action.cgi — прямое управление usb-extroot.sh в обход rpcd
+#  cgi/action.cgi — прямое управление usb-extroot.sh
 # ============================================================
 
 . /opt/usb-extroot/lib/paths.sh
@@ -26,7 +26,6 @@ REQ_TOKEN=""
 done
 [ -n "${HTTP_X_EXTROOT_TOKEN:-}" ] && REQ_TOKEN="$HTTP_X_EXTROOT_TOKEN"
 
-# URL-декодирование
 MODE=$(printf '%s' "$MODE" | sed 's|%2[Ff]|/|g; s|%20| |g; s|%3[Aa]|:|g')
 DEVICE=$(printf '%s' "$DEVICE" | sed 's|%2[Ff]|/|g; s|%20| |g; s|%3[Aa]|:|g')
 ACTION=$(printf '%s' "$ACTION" | sed 's|%2[Ff]|/|g; s|%20| |g; s|%3[Aa]|:|g')
@@ -36,7 +35,6 @@ REQ_TOKEN=$(printf '%s' "$REQ_TOKEN" | sed 's|%2[Ff]|/|g; s|%20| |g; s|%3[Aa]|:|
 
 case "$BACKUP" in yes|no) ;; *) BACKUP="no" ;; esac
 
-# --- Чтение (action) ---
 if [ -n "$ACTION" ]; then
 	printf 'Content-Type: text/plain\n\n'
 	case "$ACTION" in
@@ -82,13 +80,25 @@ if [ -n "$ACTION" ]; then
 			echo "auto_rotate=$(uci -q get usb-extroot.main.auto_rotate)"
 			;;
 		reboot-now)
+			mkdir -p "$UE_RT" 2>/dev/null || true
 			touch "$REBOOT_NOW" 2>/dev/null || true
 			;;
 		reboot-cancel)
+			mkdir -p "$UE_RT" 2>/dev/null || true
 			touch "$REBOOT_CANCEL" 2>/dev/null || true
 			;;
 		emergency-archive)
-			ls -t "$BACKUPS_EMERGENCY"/*.tar.gz 2>/dev/null | head -1
+			# Ищем emergency-архив и возвращаем relpath (emergency_backup/<file>)
+			for dir in "$BACKUPS_EMERGENCY" \
+			           /mnt/*/usb-extroot-backups/emergency_backup \
+			           /overlay/usb-extroot-backups/emergency_backup; do
+				[ -d "$dir" ] || continue
+				f=$(ls -t "$dir"/*.tar.gz 2>/dev/null | head -1)
+				if [ -n "$f" ]; then
+					echo "emergency_backup/$(basename "$f")"
+					exit 0
+				fi
+			done
 			;;
 		*)
 			echo "invalid action"
@@ -97,7 +107,6 @@ if [ -n "$ACTION" ]; then
 	exit 0
 fi
 
-# --- Запись (mode) ---
 [ -z "$MODE" ] && { printf 'Status: 400 Bad Request\n\nmode required\n'; exit 0; }
 
 [ "$REQ_TOKEN" = "$EXPECTED_WRITE" ] || {
