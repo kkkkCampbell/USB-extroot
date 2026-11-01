@@ -1,14 +1,7 @@
 'use strict';
 'require view';
 'require ui';
-'require rpc';
 'require dom';
-
-var OBJ = 'luci.usb-extroot';
-
-var callVersion         = rpc.declare({ object: OBJ, method: 'version' });
-var callReadToken       = rpc.declare({ object: OBJ, method: 'api_read_token' });
-var callWriteToken      = rpc.declare({ object: OBJ, method: 'api_write_token' });
 
 function cgiCall(params) {
 	var url = '/cgi-bin/usb-extroot-action?' + Object.keys(params).map(function(k) {
@@ -99,9 +92,8 @@ return view.extend({
 
 	load: function() {
 		return Promise.all([
-			callVersion().catch(function(){ return null; }),
-			callReadToken().catch(function(){ return null; }),
-			callWriteToken().catch(function(){ return null; })
+			cgiCall({ action: 'version' }).catch(function(){ return ''; }),
+			cgiCall({ action: 'get-tokens' }).catch(function(){ return ''; })
 		]);
 	},
 
@@ -111,15 +103,24 @@ return view.extend({
 		var css = E('link', { 'rel': 'stylesheet', 'href': L.resource('view/usb-extroot/main.css') });
 		document.head.appendChild(css);
 
-		var verObj = unwrap(res && res[0]) || {};
-		var rtObj  = unwrap(res && res[1]) || {};
-		var wtObj  = unwrap(res && res[2]) || {};
+		var verStr = res && res[0] || '';
+		var tokStr = res && res[1] || '';
 
-		self._ver        = verObj.version || '';
-		self._readToken  = rtObj.read_token || '';
-		self._writeToken = wtObj.write_token || '';
-		self._canWrite   = !!self._writeToken;
+		self._ver = verStr.trim();
+		self._readToken = '';
+		self._writeToken = '';
 
+		if (tokStr) {
+			tokStr.split('\n').forEach(function(line) {
+				var m = line.match(/^(\w+)=(.*)$/);
+				if (m) {
+					if (m[1] === 'read_token') self._readToken = m[2];
+					if (m[1] === 'write_token') self._writeToken = m[2];
+				}
+			});
+		}
+
+		self._canWrite = !!self._writeToken;
 		window._writeToken = self._writeToken;
 
 		self._state = {
@@ -488,7 +489,6 @@ return view.extend({
 			self._logPre.textContent = cleanLog(chunk);
 			self._logPre.scrollTop = self._logPre.scrollHeight;
 
-			// 1. Ловим ошибки в логе
 			if (!self._state.shownFatal && /(^|\n)(ОШИБКА|СТОП):/.test(chunk)) {
 				self._state.shownFatal = true;
 				ui.addNotification(null, E('p', {}, 'Операция завершилась с ошибкой. Проверьте лог.'), 'danger');
@@ -517,7 +517,6 @@ return view.extend({
 				self._showDownloadModal();
 			}
 
-			// 2. Проверяем, жив ли процесс, каждые 3 секунды
 			if (self._state.tick >= 3 && !self._state.shownFatal) {
 				callStatus().catch(function(){ return 'running=false'; }).then(function(sres){
 					var st = {};

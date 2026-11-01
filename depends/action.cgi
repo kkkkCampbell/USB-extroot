@@ -6,9 +6,7 @@
 . /opt/usb-extroot/lib/paths.sh
 
 EXPECTED_WRITE=$(uci -q get "$UCI_CONFIG.$UCI_SECTION.write_token" 2>/dev/null)
-[ -z "$EXPECTED_WRITE" ] && {
-	printf 'Status: 503 Service Unavailable\n\nno write_token\n'; exit 0
-}
+EXPECTED_READ=$(uci -q get "$UCI_CONFIG.$UCI_SECTION.read_token" 2>/dev/null)
 
 MODE=""
 DEVICE=""
@@ -33,13 +31,26 @@ ACTION=$(printf '%s' "$ACTION" | sed 's|%2[Ff]|/|g; s|%20| |g; s|%3[Aa]|:|g')
 ARCHIVE=$(printf '%s' "$ARCHIVE" | sed 's|%2[Ff]|/|g; s|%20| |g; s|%3[Aa]|:|g')
 REQ_TOKEN=$(printf '%s' "$REQ_TOKEN" | sed 's|%2[Ff]|/|g; s|%20| |g; s|%3[Aa]|:|g')
 
-[ "$REQ_TOKEN" = "$EXPECTED_WRITE" ] || {
-	printf 'Status: 403 Forbidden\n\nBad token\n'; exit 0
-}
-
 # --- Чтение (action) ---
 if [ -n "$ACTION" ]; then
 	printf 'Content-Type: text/plain\n\n'
+	case "$ACTION" in
+		get-tokens)
+			echo "read_token=$EXPECTED_READ"
+			echo "write_token=$EXPECTED_WRITE"
+			exit 0
+			;;
+		version)
+			/opt/usb-extroot/usb-extroot.sh --version
+			exit 0
+			;;
+	esac
+
+	TOKEN_OK=0
+	[ -n "$REQ_TOKEN" ] && [ "$REQ_TOKEN" = "$EXPECTED_READ" ] && TOKEN_OK=1
+	[ -n "$REQ_TOKEN" ] && [ "$REQ_TOKEN" = "$EXPECTED_WRITE" ] && TOKEN_OK=1
+	[ "$TOKEN_OK" = "1" ] || { echo "Bad token"; exit 0; }
+
 	case "$ACTION" in
 		status)
 			/opt/usb-extroot/usb-extroot.sh --batch --action=status 2>&1
@@ -84,6 +95,10 @@ fi
 # --- Запись (mode) ---
 [ -z "$MODE" ] && { printf 'Status: 400 Bad Request\n\nmode required\n'; exit 0; }
 
+[ "$REQ_TOKEN" = "$EXPECTED_WRITE" ] || {
+	printf 'Status: 403 Forbidden\n\nBad token\n'; exit 0
+}
+
 case "$MODE" in
 	format|noformat|restore_archive|revert_extroot|fallback_fix|switch_overlay|reset_keep_extroot|backup_manual) ;;
 	*) printf 'Content-Type: application/json\n\n{"error":"invalid mode"}\n'; exit 0 ;;
@@ -95,7 +110,6 @@ AARGS="--batch --mode=$MODE --confirm=yes --backup=no"
 
 mkdir -p "$UE_RT" 2>/dev/null || true
 
-# ОЧИЩАЕМ ЛОГ перед новым запуском
 : > "$LOG"
 echo "=== $(date '+%F %T') CGI RUN: $MODE $DEVICE ===" >> "$LOG"
 
