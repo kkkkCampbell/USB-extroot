@@ -1,0 +1,10 @@
+{
+	"admin/services/usb-extroot": {
+		"title": "USB extroot",
+		"order": 90,
+		"action": {
+			"type": "view",
+			"path": "usb-extroot/main"
+		}
+	}
+}

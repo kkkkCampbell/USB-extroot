@@ -1,0 +1,222 @@
+/* ============================================================
+   main.css — стили USB extroot UI.
+   Все классы с префиксом .usb-extroot-* чтобы не пересекаться
+   с LuCI/Bootstrap.
+   ============================================================ */
+
+/* ---------- header ---------- */
+.usb-extroot-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 10px;
+	margin-bottom: 10px;
+}
+
+.usb-extroot-header h2 {
+	margin: 0;
+}
+
+.usb-extroot-version {
+	margin-left: 12px;
+	font-size: 14px;
+	color: #888;
+	font-weight: normal;
+}
+
+/* ---------- controls block ---------- */
+.usb-extroot-controls {
+	margin: 10px 0;
+	padding: 10px;
+	background: rgba(0, 0, 0, 0.05);
+	border: 1px solid rgba(255, 255, 255, 0.1);
+	border-radius: 4px;
+}
+
+.usb-extroot-controls hr {
+	border: 0;
+	border-top: 1px solid rgba(255, 255, 255, 0.1);
+	margin: 10px 0;
+}
+
+.usb-extroot-controls hr.usb-extroot-dashed {
+	border-top-style: dashed;
+	border-top-color: rgba(255, 255, 255, 0.2);
+}
+
+.usb-extroot-row {
+	margin-bottom: 8px;
+}
+
+.usb-extroot-row-inline {
+	margin-bottom: 10px;
+	display: flex;
+	gap: 10px;
+	align-items: center;
+}
+
+.usb-extroot-row-inline > label {
+	font-weight: bold;
+	white-space: nowrap;
+}
+
+.usb-extroot-row-inline > select {
+	flex: 1;
+	min-width: 0;
+}
+
+.usb-extroot-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	justify-content: flex-end;
+}
+
+/* ---------- status / hints ---------- */
+.usb-extroot-status {
+	margin-bottom: 4px;
+	color: #aaa;
+	font-weight: bold;
+}
+
+.usb-extroot-status.ok {
+	color: #32cd32;
+}
+
+.usb-extroot-status.error {
+	color: #ff5555;
+}
+
+.usb-extroot-hint-info,
+.usb-extroot-hint-warn,
+.usb-extroot-hint-error {
+	margin-bottom: 10px;
+	padding: 6px 8px;
+	font-size: 12px;
+	border-left: 3px solid;
+	border-radius: 2px;
+}
+
+.usb-extroot-hint-info {
+	color: #7ec8ff;
+	background: rgba(126, 200, 255, 0.08);
+	border-left-color: #7ec8ff;
+}
+
+.usb-extroot-hint-warn {
+	color: #ffaa00;
+	background: rgba(255, 170, 0, 0.08);
+	border-left-color: #ffaa00;
+}
+
+.usb-extroot-hint-error {
+	color: #ff5555;
+	background: rgba(255, 85, 85, 0.08);
+	border-left-color: #ff5555;
+}
+
+/* ---------- log ---------- */
+.usb-extroot-log {
+	background: #111;
+	color: #ccc;
+	padding: 10px;
+	height: 360px;
+	overflow: auto;
+	font-family: monospace;
+	font-size: 12px;
+	line-height: 1.4;
+	white-space: pre-wrap;
+	word-break: break-all;
+	border: 1px solid #444;
+	border-radius: 4px;
+	margin-top: 10px;
+}
+
+/* ---------- modal text ---------- */
+.usb-extroot-warn {
+	font-size: 16px;
+	color: #ff5555;
+	font-weight: bold;
+}
+
+.usb-extroot-warn-bold {
+	font-weight: bold;
+	color: #ffaa00;
+}
+
+.usb-extroot-error-bold {
+	font-size: 16px;
+	font-weight: bold;
+	color: #ff5555;
+}
+
+.usb-extroot-path {
+	font-family: monospace;
+	font-size: 12px;
+	color: #aaa;
+	word-break: break-all;
+}
+
+/* ---------- confirm code ---------- */
+.usb-extroot-code {
+	font-family: monospace;
+	font-size: 16px;
+	color: #777;
+	letter-spacing: 2px;
+}
+
+.usb-extroot-code-input {
+	font-size: 16px;
+	width: 70px;
+	text-align: center;
+	padding: 4px;
+}
+
+/* ---------- modal footer ---------- */
+.usb-extroot-modal-footer {
+	display: flex;
+	gap: 8px;
+	justify-content: flex-end;
+	flex-wrap: wrap;
+	margin-top: 20px;
+}
+
+/* ---------- progress bar (upload) ---------- */
+.usb-extroot-progress {
+	width: 100%;
+	height: 10px;
+	background: #333;
+	margin-top: 6px;
+	border-radius: 2px;
+	overflow: hidden;
+}
+
+.usb-extroot-progress-bar {
+	width: 0%;
+	height: 100%;
+	background: #32cd32;
+	transition: width 0.2s ease;
+}
+
+/* ---------- settings ---------- */
+.usb-extroot-settings > div {
+	margin-bottom: 12px;
+	display: flex;
+	gap: 10px;
+	align-items: center;
+}
+
+.usb-extroot-settings input[type="number"] {
+	width: 90px;
+}
+
+/* ---------- dark mode override (если LuCI включит тёмную тему) ---------- */
+@media (prefers-color-scheme: dark) {
+	.usb-extroot-controls {
+		background: rgba(255, 255, 255, 0.03);
+		border-color: rgba(255, 255, 255, 0.1);
+	}
+	.usb-extroot-controls hr {
+		border-top-color: rgba(255, 255, 255, 0.1);
+	}
+}
