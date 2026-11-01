@@ -1,6 +1,6 @@
 #!/bin/sh
 # ============================================================
-#  usb-extroot.sh  v0.1.45.00-draft-ref**tored
+#  usb-extroot.sh  v0.1.45.00-ref**tored
 #  Перенос overlay OpenWrt на USB-накопитель (extroot)
 #  Лог: /tmp/usb-extroot.log
 #  Бэкап: /tmp/.usb-extroot-x7k2m9q4p1w8/
@@ -10,7 +10,7 @@
 #  sh <( wget -qO- https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft-ref---tored/install.sh )
 #  
 # ============================================================
-ver="v0.1.45.00-draft-ref**tored"
+ver="v0.1.45.00-ref**tored"
 SRC_BASE="https://raw.githubusercontent.com/kkkkCampbell/USB-extroot/refs/heads/draft"
 TEST_MODE=0
 EST_UBIFS_PCT=120
