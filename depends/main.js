@@ -84,6 +84,15 @@ function statusLine(st) {
 	return line;
 }
 
+function uploadPathToRelpath(p) {
+	if (!p) return '';
+	if (p.indexOf('/tmp/') === 0) return 'tmp/' + p.substring(5);
+	var marker = '/usb-extroot-backups/';
+	var idx = p.indexOf(marker);
+	if (idx !== -1) return p.substring(idx + marker.length);
+	return p.substring(p.lastIndexOf('/') + 1);
+}
+
 return view.extend({
 
 	handleSave: null,
@@ -844,7 +853,8 @@ return view.extend({
 						var dev = dSel.value;
 						if (!dev) return;
 						ui.hideModal();
-						self.runOp('restore_archive', dev, archiveName);
+						var relpath = uploadPathToRelpath(uploadedPath) || archiveName;
+						self.runOp('restore_archive', dev, relpath);
 					}
 				}, 'Восстановить')
 			]);

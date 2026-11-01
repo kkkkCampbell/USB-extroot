@@ -12,6 +12,7 @@ MODE=""
 DEVICE=""
 ACTION=""
 ARCHIVE=""
+BACKUP="no"
 REQ_TOKEN=""
 [ -n "$QUERY_STRING" ] && for pair in $(printf '%s' "$QUERY_STRING" | tr '&' ' '); do
 	case "$pair" in
@@ -19,6 +20,7 @@ REQ_TOKEN=""
 		device=*)  DEVICE="${pair#device=}" ;;
 		action=*)  ACTION="${pair#action=}" ;;
 		archive=*) ARCHIVE="${pair#archive=}" ;;
+		backup=*)  BACKUP="${pair#backup=}" ;;
 		token=*)   REQ_TOKEN="${pair#token=}" ;;
 	esac
 done
@@ -29,7 +31,10 @@ MODE=$(printf '%s' "$MODE" | sed 's|%2[Ff]|/|g; s|%20| |g; s|%3[Aa]|:|g')
 DEVICE=$(printf '%s' "$DEVICE" | sed 's|%2[Ff]|/|g; s|%20| |g; s|%3[Aa]|:|g')
 ACTION=$(printf '%s' "$ACTION" | sed 's|%2[Ff]|/|g; s|%20| |g; s|%3[Aa]|:|g')
 ARCHIVE=$(printf '%s' "$ARCHIVE" | sed 's|%2[Ff]|/|g; s|%20| |g; s|%3[Aa]|:|g')
+BACKUP=$(printf '%s' "$BACKUP" | sed 's|%2[Ff]|/|g; s|%20| |g; s|%3[Aa]|:|g')
 REQ_TOKEN=$(printf '%s' "$REQ_TOKEN" | sed 's|%2[Ff]|/|g; s|%20| |g; s|%3[Aa]|:|g')
+
+case "$BACKUP" in yes|no) ;; *) BACKUP="no" ;; esac
 
 # --- Чтение (action) ---
 if [ -n "$ACTION" ]; then
@@ -104,7 +109,7 @@ case "$MODE" in
 	*) printf 'Content-Type: application/json\n\n{"error":"invalid mode"}\n'; exit 0 ;;
 esac
 
-AARGS="--batch --mode=$MODE --confirm=yes --backup=no"
+AARGS="--batch --mode=$MODE --confirm=yes --backup=$BACKUP"
 [ -n "$DEVICE" ] && AARGS="$AARGS --device=$DEVICE"
 [ -n "$ARCHIVE" ] && AARGS="$AARGS --archive=$ARCHIVE"
 
