@@ -666,7 +666,7 @@ return view.extend({
 				ui.addNotification(null, E('p', {}, 'Нет доступных источников.'), 'danger');
 				return;
 			}
-			var sel = E('select', {}, []);
+			var sel = E('select', { 'class': 'usb-extroot-modal-select' }, []);
 			src.forEach(function(s){ sel.appendChild(E('option', { 'value': s.dev }, s.desc)); });
 
 			var body = E('div', {}, [ E('p', { 'class': 'usb-extroot-warn-bold' }, 'Источник:'), sel ]);
@@ -733,13 +733,13 @@ return view.extend({
 				return;
 			}
 
-			var aSel = E('select', {}, [ E('option', { 'value': '' }, '— выберите архив —') ]);
+			var aSel = E('select', { 'class': 'usb-extroot-modal-select' }, [ E('option', { 'value': '' }, '— выберите архив —') ]);
 			list.forEach(function(a){
 				var kb = Math.round((a.size || 0) / 1024);
 				aSel.appendChild(E('option', { 'value': a.path }, a.path + ' (' + kb + ' KB)'));
 			});
 
-			var dSel = E('select', {}, [ E('option', { 'value': 'internal' }, 'Внутренняя память роутера (/overlay)') ]);
+			var dSel = E('select', { 'class': 'usb-extroot-modal-select' }, [ E('option', { 'value': 'internal' }, 'Внутренняя память роутера (/overlay)') ]);
 			dv.forEach(function(d){ dSel.appendChild(E('option', { 'value': d.dev }, d.desc)); });
 
 			var body = E('div', {}, [
@@ -853,7 +853,7 @@ return view.extend({
 				});
 			}
 
-			var dSel = E('select', {}, [ E('option', { 'value': 'internal' }, 'Внутренняя память роутера (/overlay)') ]);
+			var dSel = E('select', { 'class': 'usb-extroot-modal-select' }, [ E('option', { 'value': 'internal' }, 'Внутренняя память роутера (/overlay)') ]);
 			dv.forEach(function(d){ dSel.appendChild(E('option', { 'value': d.dev }, d.desc)); });
 			if (st.extroot_dev) dSel.value = st.extroot_dev;
 

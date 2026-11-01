@@ -220,3 +220,11 @@
 		border-top-color: rgba(255, 255, 255, 0.1);
 	}
 }
+
+/* ---------- modal selects ---------- */
+.usb-extroot-modal-select {
+	width: 100%;
+	box-sizing: border-box;
+	margin-top: 4px;
+	margin-bottom: 8px;
+}
